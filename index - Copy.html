@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Undercover — Badminton Club Hub</title>
+<meta name="description" content="Undercover: manage your badminton club's game-day sessions. Offline-friendly, runs entirely in your browser." />
+<style>
+  html, body { margin: 0; padding: 0; background: #F6F3EA; min-height: 100vh; }
+  #root { min-height: 100vh; }
+  #boot-fallback { font-family: sans-serif; color: #647167; padding: 40px; text-align: center; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot-fallback">Loading Undercover…</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+/* ---------------------------------------------------------------------- */
+/*  Icon shims (same approach as casual.html — no extra    */
+/*  JS dependency besides React itself)                                    */
+/* ---------------------------------------------------------------------- */
+function makeIcon(symbol, extraStyle) {
+  return function Icon({ size = 16, style, ...rest }) {
+    return React.createElement("span", {
+      style: { fontSize: size, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", width: size, height: size, ...extraStyle, ...style },
+    }, symbol);
+  };
+}
+const Plus = makeIcon("+");
+const X = makeIcon("✕");
+const Trash2 = makeIcon("🗑");
+const CircleDot = makeIcon("🏸");
+const Settings = makeIcon("⚙");
+const Users = makeIcon("👥");
+const Clock = makeIcon("🕐");
+const ChevronRight = makeIcon("›");
+const Key = makeIcon("🔑");
+const Palette = makeIcon("🎨");
+const Type = makeIcon("🔤");
+const Wallet = makeIcon("💰");
+
+/* ---------------------------------------------------------------------- */
+/*  Theme tokens — identical to casual.html so both pages  */
+/*  always look like one app, not two                                     */
+/* ---------------------------------------------------------------------- */
+const THEMES = {
+  green: { court: "#123328", courtDark: "#0A2018", cream: "#F6F3EA", card: "#FFFFFF", ink: "#122019", muted: "#647167", shuttle: "#DCEF6B", accent: "#123328", headerText: "#F6F3EA", headerBg: "#123328", headerBgDark: "#0A2018" },
+  yellow: { court: "#8A5C0F", courtDark: "#5C3C08", cream: "#FBF0CB", card: "#FFFBEA", ink: "#4A3D12", muted: "#8A7440", shuttle: "#FFD23F", accent: "#8A5C0F", headerText: "#4A3D12", headerBg: "#EFC94C", headerBgDark: "#D9AE2E" },
+  dark: { court: "#131316", courtDark: "#0D0D0F", cream: "#19191B", card: "#1F2023", ink: "#E7E5E2", muted: "#9C9994", shuttle: "#4C8EFF", accent: "#4C8EFF", headerText: "#E7E5E2", headerBg: "#131316", headerBgDark: "#0D0D0F" },
+  light: { court: "#2B3A45", courtDark: "#1B262E", cream: "#F7F7F5", card: "#FFFFFF", ink: "#1E2328", muted: "#6B7278", shuttle: "#5AA9E6", accent: "#2B3A45", headerText: "#F7F7F5", headerBg: "#2B3A45", headerBgDark: "#1B262E" },
+};
+const THEME_LABELS = { green: "Green (default)", yellow: "Yellow", dark: "Dark mode", light: "Light mode" };
+const FONT_OPTIONS = {
+  manrope: { label: "Manrope (default)", stack: "'Manrope', sans-serif" },
+  system: { label: "System sans-serif", stack: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" },
+  serif: { label: "Serif (Georgia)", stack: "Georgia, 'Times New Roman', serif" },
+  mono: { label: "Monospace", stack: "'IBM Plex Mono', 'Courier New', monospace" },
+};
+const FONT_SIZES = { small: 0.9, medium: 1, large: 1.15 };
+const FONT_SIZE_LABELS = { small: "Small", medium: "Medium (default)", large: "Large" };
+
+const uid = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+/* ---------------------------------------------------------------------- */
+/*  Storage helpers — same plain-key approach, since everything here is    */
+/*  either global (settings) or an index of sessions (uc_activities)       */
+/* ---------------------------------------------------------------------- */
+function loadKey(key, fallback) {
+  try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; }
+  catch { return fallback; }
+}
+function saveKey(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+function sessionDataKey(rawKey, sessionId) { return `${rawKey}__${sessionId}`; }
+
+const MAX_SESSIONS = 100;
+
+// One-time migration: anyone who used the app before this landing page existed already has a
+// real, live session sitting under the "default" session id (see the matching migration in
+// casual.html). The very first time this page loads, if there's no Activities
+// list yet AND that old data is present, create one Activity card pointing at it — otherwise
+// that session would just be invisible, with no card to open it from.
+function migrateLegacyActivityIfNeeded() {
+  const existing = loadKey("uc_activities", null);
+  if (existing !== null) return existing;
+  const hadLegacyData = localStorage.getItem("bq_players") !== null || localStorage.getItem(sessionDataKey("bq_players", "default")) !== null;
+  const activities = hadLegacyData
+    ? [{ id: "default", label: "Existing session", createdAt: Date.now(), type: "casual" }]
+    : [];
+  saveKey("uc_activities", activities);
+  return activities;
+}
+
+// Pulls a tiny live summary for a session card — roster size and matches played — by reading
+// that session's own namespaced keys directly. This works because both pages share the same
+// browser storage (same site), even though they're two separate HTML files.
+function getSessionSummary(sessionId) {
+  const players = loadKey(sessionDataKey("bq_players", sessionId), []);
+  const history = loadKey(sessionDataKey("bq_history", sessionId), []);
+  return { playerCount: Array.isArray(players) ? players.length : 0, matchCount: Array.isArray(history) ? history.length : 0 };
+}
+
+// Same idea, but for a Competition session — reads keys written by tournament.html (prefixed
+// "comp_" instead of "bq_", since Competition data is intentionally kept separate from Casual).
+function getCompetitionSummary(sessionId) {
+  const participants = loadKey(sessionDataKey("comp_participants", sessionId), []);
+  const teams = loadKey(sessionDataKey("comp_teams", sessionId), []);
+  return { participantCount: Array.isArray(participants) ? participants.length : 0, teamCount: Array.isArray(teams) ? teams.length : 0 };
+}
+
+function App() {
+  const [loaded, setLoaded] = useState(false);
+  const [activities, setActivities] = useState([]);
+  const [competitions, setCompetitions] = useState([]);
+  const [theme, setTheme] = useState("green");
+  const [fontChoice, setFontChoice] = useState("manrope");
+  const [fontSizeChoice, setFontSizeChoice] = useState("medium");
+  const [geminiKeys, setGeminiKeys] = useState(["", "", ""]);
+  const [geminiKeyIndex, setGeminiKeyIndex] = useState(0);
+  const [shuttlePrice, setShuttlePriceState] = useState("");
+  const [courtFeePerHour, setCourtFeePerHourState] = useState("");
+  const [courtFeeMode, setCourtFeeMode] = useState("perGame");
+  const [tab, setTab] = useState("activities");
+  const [activitiesSubTab, setActivitiesSubTab] = useState("casual"); // 'casual' | 'competitions'
+  const [addOpen, setAddOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    const list = migrateLegacyActivityIfNeeded();
+    setActivities(list);
+    setCompetitions(loadKey("uc_competitions", []));
+    const appearance = loadKey("bq_appearance", { theme: "green", font: "manrope", fontSize: "medium" });
+    setTheme(THEMES[appearance.theme] ? appearance.theme : "green");
+    setFontChoice(FONT_OPTIONS[appearance.font] ? appearance.font : "manrope");
+    setFontSizeChoice(FONT_SIZES[appearance.fontSize] ? appearance.fontSize : "medium");
+    const gKeys = loadKey("bq_geminiKeys", ["", "", ""]);
+    setGeminiKeys(Array.isArray(gKeys) && gKeys.length === 3 ? gKeys : ["", "", ""]);
+    const gIdx = loadKey("bq_geminiKeyIndex", 0);
+    setGeminiKeyIndex(Number.isInteger(gIdx) && gIdx >= 0 && gIdx < 3 ? gIdx : 0);
+    const settings = loadKey("bq_settings", { shuttlePrice: 0, courtFeePerHour: 0, courtFeeMode: "perGame" });
+    setShuttlePriceState(settings.shuttlePrice !== undefined && String(settings.shuttlePrice) !== "0" ? String(settings.shuttlePrice) : "");
+    setCourtFeePerHourState(settings.courtFeePerHour !== undefined && String(settings.courtFeePerHour) !== "0" ? String(settings.courtFeePerHour) : "");
+    setCourtFeeMode(settings.courtFeeMode === "sharing" ? "sharing" : "perGame");
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { if (loaded) saveKey("uc_activities", activities); }, [activities, loaded]);
+  useEffect(() => { if (loaded) saveKey("uc_competitions", competitions); }, [competitions, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_appearance", { theme, font: fontChoice, fontSize: fontSizeChoice }); }, [theme, fontChoice, fontSizeChoice, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_geminiKeys", geminiKeys); }, [geminiKeys, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_geminiKeyIndex", geminiKeyIndex); }, [geminiKeyIndex, loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const existing = loadKey("bq_settings", {});
+    saveKey("bq_settings", { ...existing, shuttlePrice, courtFeePerHour, courtFeeMode });
+  }, [shuttlePrice, courtFeePerHour, courtFeeMode, loaded]);
+
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); }, [toast]);
+  const notify = (msg) => setToast(msg);
+
+  const COLORS = THEMES[theme];
+  const fontFamily = FONT_OPTIONS[fontChoice].stack;
+  const fontScale = FONT_SIZES[fontSizeChoice];
+
+  const createCasualSession = (dateLabel) => {
+    const id = uid("session");
+    const entry = { id, label: dateLabel || new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }), createdAt: Date.now(), type: "casual" };
+    setActivities((prev) => {
+      const next = [entry, ...prev];
+      // Rollover: past 100 sessions, drop the oldest. The session's own localStorage keys are
+      // left behind (harmless — they just become unreferenced), so this is purely about keeping
+      // the visible list from growing forever.
+      return next.length > MAX_SESSIONS ? next.slice(0, MAX_SESSIONS) : next;
+    });
+    setAddOpen(false);
+    window.location.href = `casual.html?session=${id}`;
+  };
+
+  // Same idea as createCasualSession, but for Competition — a separate list, a separate page
+  // (tournament.html), and it takes a name in addition to a date since tournaments usually
+  // have a proper title ("Barangay Cup 2026") rather than just being identified by date.
+  const createCompetitionSession = (name, dateLabel) => {
+    const id = uid("comp");
+    const label = name?.trim() ? name.trim() : (dateLabel || new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }));
+    const entry = { id, label, dateLabel: dateLabel || "", createdAt: Date.now(), type: "competition" };
+    setCompetitions((prev) => {
+      const next = [entry, ...prev];
+      return next.length > MAX_SESSIONS ? next.slice(0, MAX_SESSIONS) : next;
+    });
+    setAddOpen(false);
+    window.location.href = `tournament.html?session=${id}`;
+  };
+
+  const deleteActivity = (id) => {
+    setActivities((prev) => prev.filter((a) => a.id !== id));
+    setDeleteTarget(null);
+    notify("Session removed from the list.");
+  };
+
+  const deleteCompetition = (id) => {
+    setCompetitions((prev) => prev.filter((c) => c.id !== id));
+    setDeleteTarget(null);
+    notify("Tournament removed from the list.");
+  };
+
+  if (!loaded) return null;
+
+  return (
+    <div className="uc-root" style={{ fontFamily, fontSize: `${14 * fontScale}px` }}>
+      <UndercoverStyles colors={COLORS} fontFamily={fontFamily} />
+      <header className="uc-header">
+        <img src="undercover-banner-bg.png" alt="" aria-hidden="true" className="uc-banner-bg" />
+        <img src="undercover-banner-fg.png" alt="Undercover Badminton Club" className="uc-banner-fg" />
+      </header>
+
+      <main className="uc-main">
+        <div className="uc-section-title-row">
+          <h2 className="uc-section-title">{tab === "settings" ? "Settings" : "Activities"}</h2>
+          <button className={`uc-tab-icon ${tab === "settings" ? "uc-tab-icon-active" : ""}`} onClick={() => setTab(tab === "settings" ? "activities" : "settings")} title="Settings" aria-label="Settings">
+            <Settings size={18} />
+          </button>
+        </div>
+        {tab === "activities" ? (
+          <>
+            <div className="uc-subtab-row">
+              <button className={`uc-subtab ${activitiesSubTab === "casual" ? "uc-subtab-active" : ""}`} onClick={() => setActivitiesSubTab("casual")}>Casual</button>
+              <button className={`uc-subtab ${activitiesSubTab === "competitions" ? "uc-subtab-active" : ""}`} onClick={() => setActivitiesSubTab("competitions")}>Tournaments</button>
+            </div>
+            {activitiesSubTab === "casual" ? (
+              <ActivitiesTab activities={activities} onOpen={(id) => window.location.href = `casual.html?session=${id}`} onDelete={(a) => setDeleteTarget({ ...a, _kind: "activity" })} />
+            ) : (
+              <CompetitionsTab competitions={competitions} onOpen={(id) => window.location.href = `tournament.html?session=${id}`} onDelete={(c) => setDeleteTarget({ ...c, _kind: "competition" })} />
+            )}
+          </>
+        ) : (
+          <SettingsTab
+            theme={theme} setTheme={setTheme}
+            fontChoice={fontChoice} setFontChoice={setFontChoice}
+            fontSizeChoice={fontSizeChoice} setFontSizeChoice={setFontSizeChoice}
+            geminiKeys={geminiKeys} setGeminiKeys={setGeminiKeys}
+            geminiKeyIndex={geminiKeyIndex} setGeminiKeyIndex={setGeminiKeyIndex}
+            shuttlePrice={shuttlePrice} setShuttlePrice={setShuttlePriceState}
+            courtFeePerHour={courtFeePerHour} setCourtFeePerHour={setCourtFeePerHourState}
+            courtFeeMode={courtFeeMode} setCourtFeeMode={setCourtFeeMode}
+          />
+        )}
+      </main>
+
+      {tab === "activities" && (
+        <button className="uc-fab" onClick={() => setAddOpen(true)} aria-label="New activity"><Plus size={22} /></button>
+      )}
+
+      {addOpen && <NewActivityModal onClose={() => setAddOpen(false)} onCreateCasual={createCasualSession} onCreateCompetition={createCompetitionSession} />}
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          activity={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => (deleteTarget._kind === "competition" ? deleteCompetition(deleteTarget.id) : deleteActivity(deleteTarget.id))}
+        />
+      )}
+      {toast && <div className="uc-toast">{toast}</div>}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Activities tab                                                         */
+/* ---------------------------------------------------------------------- */
+function ActivitiesTab({ activities, onOpen, onDelete }) {
+  return (
+    <div className="uc-activities">
+      {activities.length === 0 ? (
+        <p className="uc-empty">No sessions yet. Tap + to start your first game day.</p>
+      ) : (
+        <div className="uc-activity-list">
+          {activities.map((a) => {
+            const summary = getSessionSummary(a.id);
+            return (
+              <div key={a.id} className="uc-activity-card" onClick={() => onOpen(a.id)}>
+                <div className="uc-activity-main">
+                  <div className="uc-activity-label">{a.label}</div>
+                  <div className="uc-activity-meta">
+                    <span><Users size={12} /> {summary.playerCount}</span>
+                    <span><Clock size={12} /> {summary.matchCount} match{summary.matchCount !== 1 ? "es" : ""}</span>
+                  </div>
+                </div>
+                <button
+                  className="uc-icon-btn"
+                  onClick={(e) => { e.stopPropagation(); onDelete(a); }}
+                  aria-label={`Delete ${a.label}`}
+                  title="Delete this session"
+                >
+                  <Trash2 size={14} />
+                </button>
+                <ChevronRight size={18} style={{ opacity: 0.4 }} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Competitions section — same list/card pattern as Activities, kept as   */
+/*  its own component since it reads a separate list and separate summary  */
+/* ---------------------------------------------------------------------- */
+function CompetitionsTab({ competitions, onOpen, onDelete }) {
+  return (
+    <div className="uc-activities">
+      {competitions.length === 0 ? (
+        <p className="uc-empty">No tournaments yet. Tap + and choose Tournament to set one up.</p>
+      ) : (
+        <div className="uc-activity-list">
+          {competitions.map((c) => {
+            const summary = getCompetitionSummary(c.id);
+            return (
+              <div key={c.id} className="uc-activity-card" onClick={() => onOpen(c.id)}>
+                <div className="uc-activity-main">
+                  <div className="uc-activity-label">{c.label}</div>
+                  <div className="uc-activity-meta">
+                    <span><Users size={12} /> {summary.participantCount} players</span>
+                    <span><Users size={12} /> {summary.teamCount} teams</span>
+                  </div>
+                </div>
+                <button
+                  className="uc-icon-btn"
+                  onClick={(e) => { e.stopPropagation(); onDelete(c); }}
+                  aria-label={`Delete ${c.label}`}
+                  title="Delete this tournament"
+                >
+                  <Trash2 size={14} />
+                </button>
+                <ChevronRight size={18} style={{ opacity: 0.4 }} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  New-activity modal                                                     */
+/* ---------------------------------------------------------------------- */
+function NewActivityModal({ onClose, onCreateCasual, onCreateCompetition }) {
+  const [step, setStep] = useState("choose"); // 'choose' | 'casualDate' | 'competitionDetails'
+  const [dateInput, setDateInput] = useState("");
+  const [compName, setCompName] = useState("");
+  const [compDateInput, setCompDateInput] = useState("");
+
+  return (
+    <div className="uc-modal-overlay" onClick={onClose}>
+      <div className="uc-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="uc-modal-head">
+          <h3>New activity</h3>
+          <button className="uc-icon-btn" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="uc-modal-body">
+          {step === "choose" ? (
+            <div className="uc-choice-list">
+              <button className="uc-choice" onClick={() => setStep("casualDate")}>
+                <span className="uc-choice-title">Casual</span>
+                <span className="uc-choice-sub">A regular game-day session — courts, queue, matchmaking, Bills.</span>
+              </button>
+              <button className="uc-choice" onClick={() => setStep("competitionDetails")}>
+                <span className="uc-choice-title">Tournament</span>
+                <span className="uc-choice-sub">Men's/Women's/Mixed doubles, Round Robin &amp; Bracket, Registration fee.</span>
+              </button>
+            </div>
+          ) : step === "casualDate" ? (
+            <>
+              <label className="uc-field">
+                <span>Target date</span>
+                <input type="date" className="uc-input" value={dateInput} onChange={(e) => setDateInput(e.target.value)} />
+              </label>
+              <div className="uc-modal-actions">
+                <button className="uc-btn uc-btn-ghost" onClick={() => setStep("choose")}>Back</button>
+                <button
+                  className="uc-btn uc-btn-primary"
+                  onClick={() => onCreateCasual(dateInput ? new Date(dateInput + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "")}
+                >
+                  Create session
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="uc-field">
+                <span>Tournament name</span>
+                <input type="text" className="uc-input" placeholder="e.g. Barangay Cup 2026" value={compName} onChange={(e) => setCompName(e.target.value)} />
+              </label>
+              <label className="uc-field">
+                <span>Target date</span>
+                <input type="date" className="uc-input" value={compDateInput} onChange={(e) => setCompDateInput(e.target.value)} />
+              </label>
+              <div className="uc-modal-actions">
+                <button className="uc-btn uc-btn-ghost" onClick={() => setStep("choose")}>Back</button>
+                <button
+                  className="uc-btn uc-btn-primary"
+                  onClick={() => onCreateCompetition(compName, compDateInput ? new Date(compDateInput + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "")}
+                >
+                  Create competition
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDeleteModal({ activity, onClose, onConfirm }) {
+  return (
+    <div className="uc-modal-overlay" onClick={onClose}>
+      <div className="uc-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 380 }}>
+        <div className="uc-modal-head"><h3>Remove this session?</h3><button className="uc-icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="uc-modal-body">
+          <p className="uc-muted-sm">"{activity.label}" will be removed from this list. Its data stays in this device's storage but you won't see it here anymore.</p>
+          <div className="uc-modal-actions">
+            <button className="uc-btn uc-btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="uc-btn uc-btn-danger" onClick={onConfirm}>Remove</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Settings tab — global settings shared by both pages                    */
+/* ---------------------------------------------------------------------- */
+function SettingsTab({ theme, setTheme, fontChoice, setFontChoice, fontSizeChoice, setFontSizeChoice, geminiKeys, setGeminiKeys, geminiKeyIndex, setGeminiKeyIndex, shuttlePrice, setShuttlePrice, courtFeePerHour, setCourtFeePerHour, courtFeeMode, setCourtFeeMode }) {
+  const updateKey = (idx, val) => setGeminiKeys((prev) => prev.map((k, i) => (i === idx ? val : k)));
+  return (
+    <div className="uc-settings-layout">
+      <div className="uc-settings-card">
+        <h2><Palette size={15} /> Appearance</h2>
+        <div className="uc-theme-grid">
+          {Object.keys(THEMES).map((key) => (
+            <button key={key} className={`uc-theme-swatch ${theme === key ? "uc-theme-swatch-active" : ""}`} style={{ background: THEMES[key].cream }} onClick={() => setTheme(key)}>
+              <span className="uc-theme-swatch-bar" style={{ background: THEMES[key].court }} />
+              <span className="uc-theme-swatch-label" style={{ color: THEMES[key].ink }}>{THEME_LABELS[key]}</span>
+            </button>
+          ))}
+        </div>
+        <div className="uc-settings-field">
+          <span>Font</span>
+          <select className="uc-select" value={fontChoice} onChange={(e) => setFontChoice(e.target.value)}>
+            {Object.entries(FONT_OPTIONS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+        </div>
+        <div className="uc-settings-field">
+          <span>Font size</span>
+          <select className="uc-select" value={fontSizeChoice} onChange={(e) => setFontSizeChoice(e.target.value)}>
+            {Object.entries(FONT_SIZE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="uc-settings-card">
+        <h2><Wallet size={15} /> Fees</h2>
+        <p className="uc-muted-sm">Shared across every session. Each session's Payment tab still lets you pick Per-game or Court-sharing mode.</p>
+        <div className="uc-settings-field">
+          <span>Shuttlecock price (₱)</span>
+          <input className="uc-input" type="text" inputMode="decimal" value={shuttlePrice} onChange={(e) => setShuttlePrice(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" />
+        </div>
+        <div className="uc-settings-field">
+          <span>Court fee per hour (₱)</span>
+          <input className="uc-input" type="text" inputMode="decimal" value={courtFeePerHour} onChange={(e) => setCourtFeePerHour(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" />
+        </div>
+      </div>
+
+      <div className="uc-settings-card">
+        <h2><Key size={15} /> Gemini API keys</h2>
+        <p className="uc-muted-sm">Used for AI-assisted matchmaking. Stored only on this device.</p>
+        {[0, 1, 2].map((i) => (
+          <div className="uc-settings-field" key={i}>
+            <span>Key slot {i + 1} {geminiKeyIndex === i && <em style={{ fontStyle: "normal", opacity: 0.7 }}>(active)</em>}</span>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input className="uc-input" style={{ flex: 1 }} type="password" value={geminiKeys[i]} onChange={(e) => updateKey(i, e.target.value)} placeholder="API key" />
+              <button className="uc-btn uc-btn-ghost" onClick={() => setGeminiKeyIndex(i)} disabled={geminiKeyIndex === i}>Use</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Styles                                                                  */
+/* ---------------------------------------------------------------------- */
+function UndercoverStyles({ colors, fontFamily }) {
+  const COLORS = colors;
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+      .uc-root { min-height: 100vh; background: ${COLORS.cream}; color: ${COLORS.ink}; display: flex; flex-direction: column; }
+      .uc-header { background: #000000; padding: 0; overflow: hidden; position: relative; height: auto; max-height: 220px; object-fit: contain; }
+      .uc-banner-bg { position: absolute; top: 0; left: 0; width: 100%; height: 220px; object-fit: cover;  }
+      .uc-banner-fg { position: relative; display: block; width: 100%; height: auto; max-height: 220px; object-fit: contain; object-position: center center; margin: 0 auto; }
+      .uc-tab-icon { background: rgba(0,0,0,0.08); border: none; color: ${COLORS.accent}; width: 34px; height: 34px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+      .uc-tab-icon-active { background: rgba(0,0,0,0.16); }
+      .uc-section-title-row { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
+      .uc-section-title-row .uc-tab-icon { position: absolute; right: 0; }
+      .uc-section-title { font-family: 'Oswald'; font-size: 18px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0; text-align: center; }
+      .uc-main { flex: 1; max-width: 720px; width: 100%; margin: 0 auto; padding: 20px 18px 100px; box-sizing: border-box; }
+      .uc-subtab-row { display: flex; gap: 8px; margin-bottom: 18px; }
+      .uc-subtab { flex: 1; padding: 10px 0; border: 1px solid rgba(0,0,0,0.1); background: ${COLORS.card}; color: ${COLORS.muted}; font-family: ${fontFamily}; font-weight: 700; font-size: 13px; border-radius: 10px; cursor: pointer; }
+      .uc-subtab-active { background: ${COLORS.accent}; color: ${COLORS.headerText}; border-color: ${COLORS.accent}; }
+      .uc-activities h2 { font-family: 'Oswald'; font-size: 16px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0 0 14px; }
+      .uc-empty { color: ${COLORS.muted}; font-size: 13.5px; padding: 30px 0; text-align: center; }
+      .uc-activity-list { display: flex; flex-direction: column; gap: 10px; }
+      .uc-activity-card { display: flex; align-items: center; gap: 10px; background: ${COLORS.card}; border: 1px solid rgba(0,0,0,0.08); border-radius: 14px; padding: 14px 14px; cursor: pointer; transition: transform 0.1s ease; }
+      .uc-activity-card:hover { transform: translateY(-1px); }
+      .uc-activity-main { flex: 1; min-width: 0; }
+      .uc-activity-label { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+      .uc-activity-meta { display: flex; gap: 14px; font-size: 11.5px; color: ${COLORS.muted}; }
+      .uc-activity-meta span { display: inline-flex; align-items: center; gap: 4px; }
+      .uc-icon-btn { background: none; border: none; color: ${COLORS.muted}; cursor: pointer; padding: 6px; border-radius: 8px; display: flex; }
+      .uc-icon-btn:hover { background: rgba(0,0,0,0.06); }
+      .uc-fab { position: fixed; bottom: 26px; right: 22px; width: 54px; height: 54px; border-radius: 50%; background: ${COLORS.accent}; color: ${COLORS.headerText}; border: none; box-shadow: 0 10px 24px rgba(0,0,0,0.25); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+      .uc-modal-overlay { position: fixed; inset: 0; background: rgba(10,32,24,0.5); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+      .uc-modal { background: ${COLORS.cream}; border-radius: 16px; width: 100%; max-width: 440px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+      .uc-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 8px; }
+      .uc-modal-head h3 { font-family: 'Oswald'; font-size: 15px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0; }
+      .uc-modal-body { padding: 12px 18px 18px; }
+      .uc-choice-list { display: flex; flex-direction: column; gap: 10px; }
+      .uc-choice { text-align: left; background: ${COLORS.card}; border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; padding: 14px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+      .uc-choice-title { font-weight: 700; font-size: 14px; color: ${COLORS.accent}; }
+      .uc-choice-sub { font-size: 12px; color: ${COLORS.muted}; }
+      .uc-choice-disabled { opacity: 0.5; cursor: not-allowed; }
+      .uc-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+      .uc-field > span { font-size: 12px; font-weight: 700; }
+      .uc-input, .uc-select { font-family: ${fontFamily}; font-size: 16px; padding: 9px 10px; border: 1px solid rgba(0,0,0,0.15); border-radius: 8px; background: ${COLORS.cream}; color: ${COLORS.ink}; }
+      .uc-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+      .uc-btn { font-family: ${fontFamily}; font-weight: 700; font-size: 12.5px; padding: 9px 14px; border-radius: 9px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+      .uc-btn-primary { background: ${COLORS.accent}; color: ${COLORS.headerText}; }
+      .uc-btn-ghost { background: rgba(0,0,0,0.06); color: ${COLORS.ink}; }
+      .uc-btn-danger { background: #C1453D; color: #fff; }
+      .uc-muted-sm { font-size: 12px; color: ${COLORS.muted}; line-height: 1.5; }
+
+      .uc-settings-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: start; }
+      .uc-settings-card { background: ${COLORS.card}; border: 1px solid rgba(0,0,0,0.08); border-radius: 14px; padding: 16px; }
+      .uc-settings-card h2 { font-family: 'Oswald'; font-size: 14px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
+      .uc-settings-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+      .uc-settings-field > span { font-size: 12px; font-weight: 700; }
+      .uc-theme-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
+      .uc-theme-swatch { border: 2px solid transparent; border-radius: 12px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+      .uc-theme-swatch-active { outline: 2px solid ${COLORS.accent}; outline-offset: 2px; }
+      .uc-theme-swatch-bar { display: block; height: 8px; border-radius: 4px; }
+      .uc-theme-swatch-label { font-size: 11px; font-weight: 700; text-align: left; }
+
+      .uc-toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: ${COLORS.courtDark}; color: ${COLORS.cream}; padding: 10px 18px; border-radius: 10px; font-size: 12.5px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 60; }
+
+      @media (max-width: 600px) { .uc-root input, .uc-root select { font-size: 16px !important; } }
+    `}</style>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>

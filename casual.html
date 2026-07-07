@@ -1,0 +1,2530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Undercover Pa-queue — Badminton Court Manager</title>
+<meta name="description" content="Offline-friendly badminton queue, matchmaking, court, and payment tracker. Runs entirely in your browser — no server, no account, no sync." />
+<style>
+  html, body { margin: 0; padding: 0; background: #F6F3EA; min-height: 100vh; }
+  #root { min-height: 100vh; }
+  #boot-fallback { font-family: sans-serif; color: #647167; padding: 40px; text-align: center; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot-fallback">Loading Undercover Pa-queue…</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+/* ---------------------------------------------------------------------- */
+/*  Lightweight icon shims (replaces lucide-react so the app has zero      */
+/*  external JS dependencies besides React itself)                         */
+/* ---------------------------------------------------------------------- */
+function makeIcon(symbol, extraStyle) {
+  return function Icon({ size = 16, style, className, ...rest }) {
+    return React.createElement(
+      "span",
+      {
+        className,
+        style: { fontSize: size, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", width: size, height: size, ...extraStyle, ...style },
+      },
+      symbol
+    );
+  };
+}
+const Plus = makeIcon("+");
+const Trash2 = makeIcon("🗑");
+const Pencil = makeIcon("✎");
+const Check = makeIcon("✓");
+const X = makeIcon("✕");
+const Users = makeIcon("👥");
+const Trophy = makeIcon("🏆");
+const Clock = makeIcon("🕐");
+const Sparkles = makeIcon("✨");
+const Shuffle = makeIcon("🔀");
+const RefreshCw = makeIcon("↻");
+const ChevronUp = makeIcon("▲");
+const ChevronDown = makeIcon("▼");
+const ChevronLeft = makeIcon("‹");
+const UserPlus = makeIcon("➕");
+const Swords = makeIcon("⚔");
+const Loader2 = makeIcon("◌");
+const Info = makeIcon("ℹ");
+const LogOut = makeIcon("↩");
+const ListPlus = makeIcon("☰");
+const CircleDot = makeIcon("🏸");
+const AlertTriangle = makeIcon("⚠");
+const ArrowRight = makeIcon("→");
+const Wand2 = makeIcon("🪄");
+const Wallet = makeIcon("💰");
+const Settings = makeIcon("⚙");
+const Palette = makeIcon("🎨");
+const Type = makeIcon("🔤");
+const Key = makeIcon("🔑");
+const CalcIcon = makeIcon("🧮");
+
+/* ---------------------------------------------------------------------- */
+/*  Design tokens                                                          */
+/* ---------------------------------------------------------------------- */
+// Semantic colors stay constant across themes (level/gender/category badges should stay
+// recognizable no matter which theme is active). Only surface/brand colors are themed.
+const SEMANTIC_COLORS = {
+  beginner: "#2E93C4",
+  intermediate: "#D69A34",
+  upperIntermediate: "#C97A2E",
+  advance: "#C1453D",
+  male: "#4C6FA6",
+  female: "#C15C86",
+  mixed: "#7A5CA8",
+  danger: "#C1453D",
+};
+const THEMES = {
+  green: { court: "#123328", courtDark: "#0A2018", cream: "#F6F3EA", card: "#FFFFFF", ink: "#122019", muted: "#647167", shuttle: "#DCEF6B", accent: "#123328", headerText: "#F6F3EA", headerBg: "#123328", headerBgDark: "#0A2018" },
+  yellow: { court: "#8A5C0F", courtDark: "#5C3C08", cream: "#FBF0CB", card: "#FFFBEA", ink: "#4A3D12", muted: "#8A7440", shuttle: "#FFD23F", accent: "#8A5C0F", headerText: "#4A3D12", headerBg: "#EFC94C", headerBgDark: "#D9AE2E" },
+  dark: { court: "#131316", courtDark: "#0D0D0F", cream: "#19191B", card: "#1F2023", ink: "#E7E5E2", muted: "#9C9994", shuttle: "#4C8EFF", accent: "#4C8EFF", headerText: "#E7E5E2", headerBg: "#131316", headerBgDark: "#0D0D0F" },
+  light: { court: "#2B3A45", courtDark: "#1B262E", cream: "#F7F7F5", card: "#FFFFFF", ink: "#1E2328", muted: "#6B7278", shuttle: "#5AA9E6", accent: "#2B3A45", headerText: "#F7F7F5", headerBg: "#2B3A45", headerBgDark: "#1B262E" },
+};
+const THEME_LABELS = { green: "Green (default)", yellow: "Yellow", dark: "Dark mode", light: "Light mode" };
+const ThemeContext = React.createContext(THEMES.green);
+function useThemeColors() {
+  const surface = React.useContext(ThemeContext);
+  return { ...surface, ...SEMANTIC_COLORS };
+}
+
+const FONT_OPTIONS = {
+  manrope: { label: "Manrope (default)", stack: "'Manrope', sans-serif" },
+  system: { label: "System sans-serif", stack: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" },
+  serif: { label: "Serif (Georgia)", stack: "Georgia, 'Times New Roman', serif" },
+  mono: { label: "Monospace", stack: "'IBM Plex Mono', 'Courier New', monospace" },
+};
+const FONT_SIZES = { small: 0.9, medium: 1, large: 1.15 };
+const FONT_SIZE_LABELS = { small: "Small", medium: "Medium (default)", large: "Large" };
+
+const LEVELS = ["Beginner", "Intermediate", "Upper Intermediate", "Advance"];
+const GENDERS = ["Male", "Female"];
+// All 3 doubles categories, in no fixed order — generateSeries() shuffles this fresh for every
+// match it forms, so the round doesn't systematically favor one category (e.g. always landing
+// on Mixed just because it's usually the easiest combination to find).
+const ALL_CATEGORIES = ["Men's Doubles", "Mixed Doubles", "Women's Doubles"];
+
+const uid = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+const initials = (name) => name.trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+const groupKey = (ids) => [...ids].sort().join("|");
+const formatResetTime = (ts) => ts ? new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "never (first run)";
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+// Keeps a text input numeric-only as the user types: digits + one decimal point, and (when
+// allowNegative) a single leading minus sign. Used for the Payment tab's plain textboxes so
+// there's no browser spinner, but stray characters still can't sneak in.
+function sanitizeNumeric(raw, allowNegative) {
+  let v = String(raw ?? "");
+  v = allowNegative ? v.replace(/[^0-9.\-]/g, "") : v.replace(/[^0-9.]/g, "");
+  if (allowNegative) {
+    const isNeg = v.trim().startsWith("-");
+    v = v.replace(/-/g, "");
+    if (isNeg) v = "-" + v;
+  }
+  const dot = v.indexOf(".");
+  if (dot !== -1) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, "");
+  return v;
+}
+
+const DEMO_PLAYERS = [
+  { name: "Alex Cruz", level: "Advance", gender: "Male" },
+  { name: "Bea Santos", level: "Advance", gender: "Female" },
+  { name: "Carlo Reyes", level: "Intermediate", gender: "Male" },
+  { name: "Dana Lim", level: "Intermediate", gender: "Female" },
+  { name: "Ella Tan", level: "Beginner", gender: "Female" },
+  { name: "Franco Diaz", level: "Beginner", gender: "Male" },
+  { name: "Grace Uy", level: "Intermediate", gender: "Female" },
+  { name: "Hugo Ramos", level: "Advance", gender: "Male" },
+  { name: "Ivy Chen", level: "Beginner", gender: "Female" },
+  { name: "Jun Aquino", level: "Intermediate", gender: "Male" },
+];
+
+/* ---------------------------------------------------------------------- */
+/*  Matchmaking engine                                                     */
+/* ---------------------------------------------------------------------- */
+const SPLITS = [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]];
+
+// --- Upper Intermediate wildcard system -----------------------------------
+// Upper Intermediate (UI) is a flexible level: for any pairing check, it can present as
+// either "Intermediate" or "Advance" — whichever makes the team legal. The only pairing that
+// stays banned outright is a literal Advance partnered with a literal Beginner (no UI involved).
+// A team's "identities" are every literal 2-level composition it could legally present as; two
+// teams can face each other if their identity sets share at least one composition in common.
+function resolutions(level) {
+  return level === "Upper Intermediate" ? ["Intermediate", "Advance"] : [level];
+}
+function pairIsBanned(a, b) {
+  const s = [a, b].sort();
+  return s[0] === "Advance" && s[1] === "Beginner";
+}
+function teamIdentities(levels) {
+  const [l1, l2] = levels;
+  const out = new Set();
+  for (const r1 of resolutions(l1)) {
+    for (const r2 of resolutions(l2)) {
+      if (!pairIsBanned(r1, r2)) out.add([r1, r2].sort().join("-"));
+    }
+  }
+  return out;
+}
+function teamsCompatible(levelsA, levelsB) {
+  const idA = teamIdentities(levelsA);
+  const idB = teamIdentities(levelsB);
+  if (idA.size === 0 || idB.size === 0) return false;
+  for (const id of idA) if (idB.has(id)) return true;
+  return false;
+}
+// Narrow tie-break: a team of literal {Upper Intermediate, Beginner} can legally face either
+// another literal UI+Beginner team or a literal Intermediate+Beginner team (both resolve to the
+// same "Intermediate+Beginner" identity). When a group of 4 allows more than one valid pairing,
+// slightly prefer the UI+Beginner vs UI+Beginner pairing. This never changes WHICH 4 players get
+// selected — only how an already-chosen group of 4 gets split into teams.
+function isUIBeginner(levels) { return [...levels].sort().join("-") === "Beginner-Upper Intermediate"; }
+function detectCategory(teamA, teamB) {
+  const gA = teamA.map((p) => p.gender);
+  const gB = teamB.map((p) => p.gender);
+  const all = [...gA, ...gB];
+  if (all.every((g) => g === all[0])) return all[0] === "Male" ? "Men's Doubles" : "Women's Doubles";
+  const isMixedPair = (g) => g.includes("Male") && g.includes("Female");
+  if (isMixedPair(gA) && isMixedPair(gB)) return "Mixed Doubles";
+  return null;
+}
+function evaluateSplit(four, splitIdx) {
+  const [a, b] = SPLITS[splitIdx];
+  const teamA = a.map((i) => four[i]);
+  const teamB = b.map((i) => four[i]);
+  const levelsA = teamA.map((p) => p.level);
+  const levelsB = teamB.map((p) => p.level);
+  const levelOk = teamsCompatible(levelsA, levelsB);
+  const category = detectCategory(teamA, teamB);
+  return { teamA, teamB, category, valid: levelOk && !!category, levelOk };
+}
+function findValidSplit(four) {
+  const validOnes = [];
+  for (let i = 0; i < SPLITS.length; i++) {
+    const r = evaluateSplit(four, i);
+    if (r.valid) validOnes.push({ ...r, splitIdx: i });
+  }
+  if (validOnes.length === 0) return null;
+  const bothUIBeginner = validOnes.find((r) => isUIBeginner(r.teamA.map((p) => p.level)) && isUIBeginner(r.teamB.map((p) => p.level)));
+  return bothUIBeginner || validOnes[0];
+}
+// Search a priority-ordered slice for one valid quad, honoring the "no repeat foursome" rule when possible.
+function searchQuad(pool, categoryFilter, playedGroupsSet, avoidRepeat) {
+  const p = pool.slice(0, 16);
+  const n = p.length;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++)
+      for (let k = j + 1; k < n; k++)
+        for (let l = k + 1; l < n; l++) {
+          const four = [p[i], p[j], p[k], p[l]];
+          const res = findValidSplit(four);
+          if (!res) continue;
+          if (categoryFilter && res.category !== categoryFilter) continue;
+          if (avoidRepeat && playedGroupsSet.has(groupKey(four.map((x) => x.id)))) continue;
+          return { ...res, players: four };
+        }
+  return null;
+}
+// Peel off as many valid matches as possible from a priority-sorted pool.
+// When the caller hasn't forced a single category, the category order is reshuffled before
+// every match is formed, so the round doesn't systematically default to whichever category
+// happens to be easiest to find (e.g. Mixed) — it varies naturally based on who's available.
+function generateSeries(sortedPool, playedGroupsSet, categoryFilter) {
+  let remaining = [...sortedPool];
+  const matches = [];
+  while (remaining.length >= 4) {
+    const categoryOrder = categoryFilter ? [categoryFilter] : shuffle(ALL_CATEGORIES);
+    let found = null;
+    let forced = false;
+    for (const cat of categoryOrder) {
+      found = searchQuad(remaining, cat, playedGroupsSet, true);
+      if (found) break;
+    }
+    if (!found) {
+      for (const cat of categoryOrder) {
+        found = searchQuad(remaining, cat, playedGroupsSet, false);
+        if (found) { forced = true; break; }
+      }
+    }
+    if (!found) break;
+    matches.push({ ...found, repeatForced: forced && playedGroupsSet.has(groupKey(found.players.map((x) => x.id))) });
+    const used = new Set(found.players.map((p) => p.id));
+    remaining = remaining.filter((p) => !used.has(p.id));
+  }
+  return { matches, leftover: remaining };
+}
+// Priority order: longest sit-out streak first, then fewest matches today, then FIFO queue order.
+// Stale ids (pointing to a deleted player) are dropped here — this is what previously let
+// "ghost" players with no name/level/gender sneak into a match and render as a blank slot.
+function priorityQueue(queueIds, playersById) {
+  return queueIds
+    .filter((id) => playersById[id])
+    .map((id, idx) => ({ ...playersById[id], _idx: idx }))
+    .sort((a, b) => (b.sitOutStreak - a.sitOutStreak) || (a.matchesToday - b.matchesToday) || (a._idx - b._idx));
+}
+// A match is only ever valid if all 4 slots resolve to a real player.
+function isCompleteMatch(m) {
+  return m && m.teamA && m.teamB && m.teamA.length === 2 && m.teamB.length === 2 &&
+    [...m.teamA, ...m.teamB].every((p) => p && p.id);
+}
+// Checks a specific teamA/teamB id pairing (used after a manual swap, where the pairing is
+// fixed by the QM rather than searched for).
+function evaluateTeamIds(teamAIds, teamBIds, playersById) {
+  const teamA = teamAIds.map((id) => playersById[id]).filter(Boolean);
+  const teamB = teamBIds.map((id) => playersById[id]).filter(Boolean);
+  if (teamA.length !== 2 || teamB.length !== 2) return { valid: false, category: null };
+  const levelOk = teamsCompatible(teamA.map((p) => p.level), teamB.map((p) => p.level));
+  const category = detectCategory(teamA, teamB);
+  return { valid: levelOk && !!category, category };
+}
+// After a manual swap: keep the QM's current team split if it's already valid; otherwise try the
+// other 2 ways to split the same 4 players; otherwise keep the swap as-is (override allowed, same
+// spirit as Build Manually) and let the UI show a warning.
+function recomputeMatch(match, playersById) {
+  const current = evaluateTeamIds(match.teamA, match.teamB, playersById);
+  if (current.valid) return { ...match, category: current.category };
+  const four = [...match.teamA, ...match.teamB].map((id) => playersById[id]).filter(Boolean);
+  if (four.length === 4) {
+    const found = findValidSplit(four);
+    if (found) return { ...match, teamA: found.teamA.map((p) => p.id), teamB: found.teamB.map((p) => p.id), category: found.category };
+  }
+  return { ...match, category: current.category };
+}
+// Derives per-player ranking stats purely from the history log — nothing is stored separately,
+// so clearing history automatically resets rankings. A match only counts if BOTH scores are
+// filled in; ties are not expected (the app's format always produces a winner) so any tied score
+// is defensively skipped rather than guessed. Score diff only accumulates from matches WON.
+function computeRankings(history, players) {
+  const stats = {};
+  players.forEach((p) => { stats[p.id] = { points: 0, wins: 0, matches: 0, scoreDiff: 0 }; });
+  history.forEach((h) => {
+    const scoreA = parseInt(h.scoreA, 10);
+    const scoreB = parseInt(h.scoreB, 10);
+    if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB) || scoreA === scoreB) return;
+    const aWins = scoreA > scoreB;
+    (h.teamAIds || []).forEach((id) => {
+      if (!stats[id]) return;
+      stats[id].points += scoreA;
+      stats[id].matches += 1;
+      stats[id].scoreDiff += (scoreA - scoreB);
+      if (aWins) stats[id].wins += 1;
+    });
+    (h.teamBIds || []).forEach((id) => {
+      if (!stats[id]) return;
+      stats[id].points += scoreB;
+      stats[id].matches += 1;
+      stats[id].scoreDiff += (scoreB - scoreA);
+      if (!aWins) stats[id].wins += 1;
+    });
+  });
+  return players.map((p) => ({ ...p, ...stats[p.id] })).filter((p) => p.matches > 0);
+}
+const fmt = (n) => `₱${(n || 0).toFixed(2)}`;
+// The single source of truth for "what does this player owe" — used by both the live Bills
+// table AND the archiving logic, so a session snapshot always matches what was actually shown.
+// Court fee / shuttle fee are still computed (they feed Total) but intentionally not returned
+// as separate columns, per the request to hide them from the Bills table.
+// The single source of truth for "what does this player owe" — used by the live Bills table,
+// archiving, AND the expand-columns feature (which needs courtCost/shuttleCost individually,
+// not just their sum). Court fee / shuttle fee are always computed; whether they're SHOWN as
+// separate columns is a display choice made elsewhere, not something this function decides.
+function computeBillRows(players, shuttlePrice, courtFeePerHour, courtFeeMode, totalCourtFee) {
+  const shuttlePriceNum = parseFloat(shuttlePrice) || 0;
+  const perGameShuttleFee = shuttlePriceNum / 4;
+
+  // Two different ways to work out each player's court fee, always rounded up to the nearest
+  // peso per player, per the house rule:
+  //  - "perGame": ÷3 games/hour ÷4 players = a rate per game, × how many games THIS player played.
+  //  - "sharing": one flat total fee, split evenly across everyone who played at least 1 game —
+  //    someone who played 4 games pays the same court share as someone who played 1.
+  let getCourtCost;
+  if (courtFeeMode === "sharing") {
+    const totalCourtFeeNum = parseFloat(totalCourtFee) || 0;
+    const participantCount = players.filter((p) => p.matchesToday >= 1).length;
+    const perPlayerShare = participantCount > 0 ? totalCourtFeeNum / participantCount : 0;
+    getCourtCost = (p) => (p.matchesToday >= 1 ? Math.ceil(perPlayerShare) : 0);
+  } else {
+    const perGameCourtFee = (parseFloat(courtFeePerHour) || 0) / 3 / 4;
+    getCourtCost = (p) => Math.ceil(perGameCourtFee * p.matchesToday);
+  }
+
+  return players
+    .map((p) => {
+      const courtCost = getCourtCost(p);
+      const shuttleCost = perGameShuttleFee * (p.shuttleGamesToday || 0);
+      const misc = parseFloat(p.miscAdjustment) || 0;
+      return {
+        id: p.id, name: p.name, games: p.matchesToday, misc, courtCost, shuttleCost, total: courtCost + shuttleCost + misc, paid: !!p.paidToday,
+        // raw stats kept only so an accidental archive can be undone later — not shown anywhere
+        rawMatchesToday: p.matchesToday, rawShuttleGamesToday: p.shuttleGamesToday || 0, rawMiscAdjustment: p.miscAdjustment || "",
+      };
+    })
+    .filter((r) => r.total !== 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Builds a plain HTML table off-screen (not visible to the user), styled to match whichever
+// theme is currently active, screenshots it with html2canvas, then triggers a PNG download.
+// Off-screen (not display:none) is required — html2canvas can only capture elements that are
+// actually laid out on the page.
+// Builds a themed off-screen HTML table for the given columns/rows — reused for both Bills and
+// Ranking exports, since both are "a table of stats," just with different columns.
+function buildExportNode(title, columns, rows, colors) {
+  const node = document.createElement("div");
+  node.style.cssText = `position:fixed; top:-9999px; left:0; width:420px; font-family:'Manrope',sans-serif; background:${colors.cream};`;
+  const headCells = columns.map((c) => `<td style="padding:8px 12px; font-size:10px; font-weight:700; text-transform:uppercase; color:${colors.muted};">${escapeHtml(c.label)}</td>`).join("");
+  const bodyRows = rows.length
+    ? rows.map((r, i) => `<tr style="border-top:1px solid #00000014;">${columns.map((c) => `<td style="padding:9px 12px; font-size:${c.bold ? "12px" : "13px"}; font-family:${c.bold ? "'IBM Plex Mono',monospace" : "'Manrope',sans-serif"}; font-weight:${c.bold ? 700 : 400}; color:${c.bold ? colors.accent : colors.ink};">${c.render(r, i)}</td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="${columns.length}" style="padding:14px 12px; color:${colors.muted}; font-size:12px;">No data to show.</td></tr>`;
+  node.innerHTML = `
+    <div style="background:${colors.headerBg}; color:${colors.headerText}; padding:14px 16px; font-weight:700; font-size:15px; font-family:'Oswald',sans-serif; text-transform:uppercase;">Undercover Pa-queue &mdash; ${escapeHtml(title)}</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <thead><tr style="background:${colors.card};">${headCells}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>`;
+  return node;
+}
+// Standard column sets, reused by Bills (live + Previous Bills) and Ranking.
+function getBillsColumns(expanded) {
+  return [
+    { label: "Player", render: (r) => escapeHtml(r.name) },
+    { label: "Games", render: (r) => r.games },
+    { label: "Misc", render: (r) => fmt(r.misc) },
+    ...(expanded ? [
+      { label: "Court fee", render: (r) => fmt(r.courtCost) },
+      { label: "Shuttle fee", render: (r) => fmt(r.shuttleCost) },
+    ] : []),
+    { label: "Total", render: (r) => fmt(r.total), bold: true },
+    { label: "Paid", render: (r) => (r.paid ? '<span style="color:#2E9E4F; font-weight:700;">&#10004;</span>' : '<span style="color:#9A9A9A;">&mdash;</span>') },
+  ];
+}
+function rankingColumns(subTab, ranks) {
+  const base = [{ label: "#", render: (r, i) => ranks[i] }, { label: "Player", render: (r) => escapeHtml(r.name) }];
+  if (subTab === "wins") return [...base, { label: "Wins", render: (r) => r.wins }, { label: "Score diff", render: (r) => `${r.scoreDiff >= 0 ? "+" : ""}${r.scoreDiff}`, bold: true }];
+  if (subTab === "points") return [...base, { label: "Points", render: (r) => r.points }, { label: "Matches", render: (r) => r.matches, bold: true }];
+  return [...base, { label: "Win%", render: (r) => `${Math.round((r.wins / r.matches) * 100)}%` }, { label: "Score diff", render: (r) => `${r.scoreDiff >= 0 ? "+" : ""}${r.scoreDiff}`, bold: true }];
+}
+// Turns a sorted list into "dense" rank numbers: ties share a rank, and the next distinct rank
+// does NOT skip ahead (1, 1, 2, 3 — not 1, 1, 3, 4). Relies on the list already being sorted by
+// the same criteria passed in `isTied`, so genuinely tied rows are always adjacent to each other.
+function computeDenseRanks(sorted, isTied) {
+  const ranks = [];
+  let rank = 0;
+  sorted.forEach((row, i) => {
+    if (i === 0 || !isTied(sorted[i - 1], row)) rank += 1;
+    ranks.push(rank);
+  });
+  return ranks;
+}
+// Renders the table to a PNG, then hands it to the device's native share sheet if the browser
+// supports sharing files (mobile browsers, generally) — letting the person pick Messenger,
+// Telegram, Instagram, etc. themselves. Falls back to a plain download everywhere else (desktop
+// browsers can't share files this way at all) or if the person cancels the share sheet.
+// Renders the export node (Bills or Ranking table) to a canvas via html2canvas. This is the
+// same drawing step shareImage used to do — split out so both the preview `<img>` and the
+// Share button can reuse the exact same rendered image instead of drawing it twice.
+async function renderExportCanvas(title, columns, rows, colors) {
+  const node = buildExportNode(title, columns, rows, colors);
+  document.body.appendChild(node);
+  try {
+    return await window.html2canvas(node, { backgroundColor: colors.cream, scale: 2 });
+  } finally {
+    document.body.removeChild(node);
+  }
+}
+
+// Shows the exported PNG as a real <img> — not just a share-sheet call — because a real <img>
+// on iOS gets WebKit's native press-and-hold menu (Save to Photos / Copy / Share…), which works
+// identically in Safari AND Chrome. navigator.share() itself is each browser's own bridge to
+// that menu, and Chrome's bridge for FILES (as opposed to plain links) is known to be unreliable
+// on iOS — it can open a "Save to Files" step instead of Photos with no error thrown, so code
+// can't detect the failure to fall back automatically. Showing the image directly sidesteps that
+// entirely: the long-press menu is a system feature, not something each browser reimplements.
+function ExportPreviewModal({ canvas, fileName, title, onClose }) {
+  const dataUrl = canvas.toDataURL("image/png");
+  const shareNow = async () => {
+    try {
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      const file = new File([blob], fileName, { type: "image/png" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title });
+      }
+    } catch (err) { /* cancelled or unsupported — the image above still works either way */ }
+  };
+  return (
+    <div className="bq-modal-overlay" onClick={onClose}>
+      <div className="bq-modal bq-export-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+        <div className="bq-modal-head"><h3>{title}</h3><button className="bq-icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="bq-modal-body bq-export-scroll">
+          <p className="bq-muted-sm">Press and hold the image below to Save, Copy, or Share it — works the same in Safari and Chrome.</p>
+          <img src={dataUrl} alt={title} style={{ width: "100%", borderRadius: 10, border: "1px solid #DDD6C2", display: "block" }} />
+        </div>
+        <button className="bq-btn bq-btn-primary bq-export-share-btn" onClick={shareNow}>Share…</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Storage helpers (personal, per-user)                                   */
+/* ---------------------------------------------------------------------- */
+// Pure client-side storage: every device/browser keeps its own independent data.
+// No account, no sync, no server — this is what makes the app work standalone.
+async function loadKey(key, fallback) {
+  try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; }
+  catch { return fallback; }
+}
+async function saveKey(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked */ }
+}
+// This page is always opened as casual.html?session=<id> from the Undercover
+// landing page (index.html). The session id becomes a prefix on every PER-SESSION storage key,
+// so two different sessions never see each other's roster/queue/history/bills. Settings that
+// should follow you everywhere (theme, font, Gemini keys, fee amounts) deliberately do NOT use
+// this prefix — they keep their old plain key names, so they stay "global".
+function getSessionId() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("session") || "default";
+}
+const SESSION_ID = getSessionId();
+function sessionKey(key) { return `${key}__${SESSION_ID}`; }
+// One-time migration for people upgrading from the pre-session version of this app: your data
+// was saved under plain keys like "bq_players" back then. The very first time the "default"
+// session loads after this update, copy each old key over to its new namespaced slot — so your
+// existing roster, queue, courts, and history show up exactly as you left them, instead of
+// looking wiped just because the storage keys changed shape.
+function migrateLegacyDataIfNeeded() {
+  if (SESSION_ID !== "default") return; // only the pre-existing session needs this
+  const LEGACY_KEYS = ["bq_players", "bq_queue", "bq_courts", "bq_pending", "bq_playedGroups", "bq_history", "bq_meta"];
+  const alreadyMigrated = localStorage.getItem(sessionKey("bq_players")) !== null;
+  if (alreadyMigrated) return;
+  const hadLegacyData = localStorage.getItem("bq_players") !== null;
+  if (!hadLegacyData) return;
+  LEGACY_KEYS.forEach((key) => {
+    const raw = localStorage.getItem(key);
+    if (raw !== null) localStorage.setItem(sessionKey(key), raw);
+  });
+}
+migrateLegacyDataIfNeeded();
+
+/* ---------------------------------------------------------------------- */
+/*  Small UI atoms                                                         */
+/* ---------------------------------------------------------------------- */
+function LevelBadge({ level, abbreviate }) {
+  const COLORS = useThemeColors();
+  const LEVEL_COLOR = { Beginner: COLORS.beginner, Intermediate: COLORS.intermediate, "Upper Intermediate": COLORS.upperIntermediate, Advance: COLORS.advance };
+  const display = abbreviate && level === "Upper Intermediate" ? "Upper Int." : level;
+  return <span style={{ background: `${LEVEL_COLOR[level]}1A`, color: LEVEL_COLOR[level], border: `1px solid ${LEVEL_COLOR[level]}55` }} className="bq-badge">{display}</span>;
+}
+function GenderDot({ gender }) {
+  const COLORS = useThemeColors();
+  return <span title={gender} style={{ background: gender === "Male" ? COLORS.male : COLORS.female }} className="bq-gender-dot" />;
+}
+function Avatar({ name, size = 34 }) {
+  return <div className="bq-avatar" style={{ width: size, height: size, fontSize: size * 0.36 }}>{initials(name)}</div>;
+}
+function CategoryChip({ category }) {
+  const COLORS = useThemeColors();
+  const CATEGORY_COLOR = { "Men's Doubles": COLORS.male, "Women's Doubles": COLORS.female, "Mixed Doubles": COLORS.mixed };
+  const c = CATEGORY_COLOR[category] || COLORS.muted;
+  return <span className="bq-category-chip" style={{ background: `${c}1F`, color: c, borderColor: `${c}55` }}>{category || "No standard category"}</span>;
+}
+function TeamBlock({ ids, playersById, abbreviate }) {
+  return (
+    <div className="bq-team">
+      {ids.map((id) => {
+        const p = playersById[id];
+        if (!p) return null;
+        return (
+          <div key={id} className="bq-team-player">
+            <Avatar name={p.name} size={30} />
+            <div><div className="bq-team-name">{p.name}</div><LevelBadge level={p.level} abbreviate={abbreviate} /></div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+function CourtLines({ opacity = 1 }) {
+  return (
+    <svg viewBox="0 0 300 140" className="bq-court-lines" style={{ opacity }} preserveAspectRatio="none">
+      <rect x="4" y="4" width="292" height="132" fill="none" stroke="currentColor" strokeWidth="2" />
+      <line x1="4" y1="72" x2="296" y2="72" stroke="currentColor" strokeWidth="2" strokeDasharray="6 5" />
+      <line x1="150" y1="4" x2="150" y2="136" stroke="currentColor" strokeWidth="1.5" />
+      <line x1="30" y1="4" x2="30" y2="136" stroke="currentColor" strokeWidth="1.5" />
+      <line x1="270" y1="4" x2="270" y2="136" stroke="currentColor" strokeWidth="1.5" />
+      <line x1="4" y1="24" x2="296" y2="24" stroke="currentColor" strokeWidth="1.5" />
+      <line x1="4" y1="116" x2="296" y2="116" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+// Shows a brief dark bubble above its child: on hover for mouse/desktop, or on a ~500ms
+// press-and-hold for touch devices (mobile/tablet), matching how native tooltips don't
+// reliably support long-press. Dismisses on mouse-leave / touch-end.
+function Tooltip({ text, children }) {
+  const [visible, setVisible] = useState(false);
+  const timerRef = React.useRef(null);
+  const clearTimer = () => { if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } };
+  const startPress = () => { clearTimer(); timerRef.current = setTimeout(() => setVisible(true), 500); };
+  const endPress = () => { clearTimer(); setVisible(false); };
+  return (
+    <span
+      className="bq-tooltip-wrap"
+      onMouseEnter={() => setVisible(true)}
+      onMouseLeave={() => setVisible(false)}
+      onTouchStart={startPress}
+      onTouchEnd={endPress}
+      onTouchCancel={endPress}
+    >
+      {children}
+      {visible && <span className="bq-tooltip-bubble" role="tooltip">{text}</span>}
+    </span>
+  );
+}
+// A small (i) icon that toggles a text explanation on click/tap — works identically on desktop
+// and mobile (no hover or long-press needed), and the bubble wraps text instead of staying on
+// one line, since explanations tend to be longer than a button's quick-glance tooltip.
+function InfoTip({ text }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = React.useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onOutside = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onOutside);
+    document.addEventListener("touchstart", onOutside);
+    return () => { document.removeEventListener("mousedown", onOutside); document.removeEventListener("touchstart", onOutside); };
+  }, [open]);
+  return (
+    <span className="bq-infotip-wrap" ref={wrapRef}>
+      <button type="button" className="bq-infotip-btn" onClick={() => setOpen((o) => !o)} aria-label="More info">
+        <Info size={13} />
+      </button>
+      {open && <span className="bq-infotip-bubble" role="tooltip">{text}</span>}
+    </span>
+  );
+}
+
+// Safely evaluates a simple arithmetic string (digits, + - * / ( ) . and spaces only). Anything
+// containing another character is rejected outright — this is what makes it safe to run through
+// JavaScript's Function() constructor: by the time it gets here, there's no way for it to contain
+// actual code, only numbers and math operators.
+function evaluateSimpleFormula(input) {
+  const clean = String(input || "").trim();
+  if (clean === "") return null; // empty is a deliberate "clear this value" case
+  if (!/^[0-9+\-*/.() ]+$/.test(clean)) return NaN;
+  try {
+    const result = Function(`"use strict"; return (${clean});`)();
+    return typeof result === "number" && Number.isFinite(result) ? result : NaN;
+  } catch {
+    return NaN;
+  }
+}
+// If the full string doesn't evaluate (e.g. "50+" — an unfinished formula), trims one character
+// off the end and tries again, repeating until something valid is found. A complete formula like
+// "(5+3)" still succeeds on the very first try, so nothing is trimmed unless it's actually needed.
+function findLargestValidPrefix(input) {
+  let candidate = String(input || "").trim();
+  while (candidate.length > 0) {
+    const result = evaluateSimpleFormula(candidate);
+    if (typeof result === "number" && Number.isFinite(result)) return result;
+    candidate = candidate.slice(0, -1).trimEnd();
+  }
+  return NaN;
+}
+// A text input that behaves like a spreadsheet cell: you can type a formula (e.g. "50+30"), and
+// it only gets evaluated when you click away or press Enter — not on every keystroke, since a
+// half-typed formula like "50+" isn't valid yet. If what's left over after trimming still isn't
+// salvageable at all, it reverts to whatever the last good value was.
+function MiscFormulaInput({ value, onCommit, title }) {
+  const [draft, setDraft] = useState(value || "");
+  const [focused, setFocused] = useState(false);
+  const [calcOpen, setCalcOpen] = useState(false);
+  useEffect(() => { setDraft(value || ""); }, [value]);
+  const handleChange = (e) => {
+    setDraft(e.target.value.replace(/[^0-9+\-*/.() ]/g, ""));
+  };
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed === "") { setDraft(""); onCommit(""); return; }
+    const result = findLargestValidPrefix(trimmed);
+    if (Number.isFinite(result)) {
+      const rounded = Math.round(result * 100) / 100;
+      setDraft(String(rounded));
+      onCommit(String(rounded));
+    } else {
+      setDraft(value || ""); // nothing salvageable — revert, don't save it
+    }
+  };
+  // Tapping the calculator icon shouldn't blur the input first (that would run commit() on
+  // whatever partial text is sitting there) — preventDefault on mousedown stops the input from
+  // ever losing focus in the first place, so the icon stays visible while the popup is open too.
+  const applyCalcResult = (result) => {
+    setDraft(result);
+    onCommit(result);
+    setCalcOpen(false);
+  };
+  return (
+    <span className="bq-formula-wrap">
+      <input
+        type="text" inputMode="decimal" placeholder="0" className="bq-pay-misc-input"
+        value={draft}
+        onChange={handleChange}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { commit(); setFocused(false); }}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        title={title}
+      />
+      {focused && (
+        <button
+          type="button"
+          className="bq-calc-trigger"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setCalcOpen(true)}
+          title="Open calculator"
+          aria-label="Open calculator"
+        >
+          <CalcIcon size={13} />
+        </button>
+      )}
+      {calcOpen && <CalcPopup onResult={applyCalcResult} onClose={() => setCalcOpen(false)} />}
+    </span>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Calculator popup — used by MiscFormulaInput so Misc & Total Court Fee  */
+/*  have full +, -, *, / on mobile without fighting the native keyboard    */
+/* ---------------------------------------------------------------------- */
+function CalcPopup({ onResult, onClose }) {
+  const [expr, setExpr] = useState("");
+  const press = (val) => setExpr((e) => e + val);
+  const backspace = () => setExpr((e) => e.slice(0, -1));
+  const clear = () => setExpr("");
+  const equals = () => {
+    const result = findLargestValidPrefix(expr.trim());
+    if (Number.isFinite(result)) {
+      onResult(String(Math.round(result * 100) / 100));
+    } else {
+      onClose();
+    }
+  };
+  const ROWS = [
+    ["7", "8", "9", "÷"],
+    ["4", "5", "6", "×"],
+    ["1", "2", "3", "−"],
+    ["C", "0", ".", "+"],
+  ];
+  const SYMBOL_TO_OP = { "÷": "/", "×": "*", "−": "-" };
+  return (
+    <div className="bq-calc-overlay" onClick={onClose}>
+      <div className="bq-calc" onClick={(e) => e.stopPropagation()}>
+        <div className="bq-calc-display">{expr || "0"}</div>
+        <div className="bq-calc-grid">
+          {ROWS.flat().map((k) => (
+            <button
+              key={k}
+              type="button"
+              className={`bq-calc-key ${"+−×÷".includes(k) ? "bq-calc-key-op" : ""}`}
+              onClick={() => (k === "C" ? clear() : press(SYMBOL_TO_OP[k] || k))}
+            >
+              {k}
+            </button>
+          ))}
+          <button type="button" className="bq-calc-key bq-calc-key-wide" onClick={backspace}>⌫</button>
+          <button type="button" className="bq-calc-key bq-calc-key-wide bq-calc-key-equals" onClick={equals}>=</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Main App                                                                */
+/* ---------------------------------------------------------------------- */
+function App() {
+  const [loaded, setLoaded] = useState(false);
+  const [players, setPlayers] = useState([]);
+  const [queue, setQueue] = useState([]);
+  const [courts, setCourts] = useState([]);
+  const [pendingMatches, setPendingMatches] = useState([]);
+  const [playedGroups, setPlayedGroups] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [shuttlePrice, setShuttlePriceState] = useState("");
+  const [courtFeePerHour, setCourtFeePerHourState] = useState("");
+  const [courtFeeMode, setCourtFeeMode] = useState("perGame"); // 'perGame' | 'sharing'
+  const [totalCourtFee, setTotalCourtFeeState] = useState("");
+  const [geminiKeys, setGeminiKeys] = useState(["", "", ""]);
+  const [geminiKeyIndex, setGeminiKeyIndex] = useState(0);
+  const geminiKey = geminiKeys[geminiKeyIndex] || "";
+  const [theme, setTheme] = useState("green");
+  const [fontChoice, setFontChoice] = useState("manrope");
+  const [fontSizeChoice, setFontSizeChoice] = useState("medium");
+  const [tab, setTab] = useState("courts");
+  const [toast, setToast] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [lastResetAt, setLastResetAt] = useState(null);
+  const [sessionDateLabel, setSessionDateLabel] = useState("");
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetQueueConfirmOpen, setResetQueueConfirmOpen] = useState(false);
+  const [pendingIdleMatch, setPendingIdleMatch] = useState(null); // { courtId, court } awaiting the idle-gap confirm
+
+  const playersById = Object.fromEntries(players.map((p) => [p.id, p]));
+
+  /* ---------- load (no automatic reset — see resetDay() for the manual, confirmed version) ---------- */
+  useEffect(() => {
+    (async () => {
+      let p = await loadKey(sessionKey("bq_players"), null);
+      let q = await loadKey(sessionKey("bq_queue"), []);
+      let c = await loadKey(sessionKey("bq_courts"), [
+        { id: uid("court"), label: "Court 1", match: null },
+        { id: uid("court"), label: "Court 2", match: null },
+      ]);
+      let pend = await loadKey(sessionKey("bq_pending"), []);
+      let groups = await loadKey(sessionKey("bq_playedGroups"), []);
+      let h = await loadKey(sessionKey("bq_history"), []);
+      let meta = await loadKey(sessionKey("bq_meta"), { lastResetAt: null });
+      let settings = await loadKey("bq_settings", { shuttlePrice: 0, courtFeePerHour: 0, courtFeeMode: "perGame", totalCourtFee: 0 });
+      let gKeys = await loadKey("bq_geminiKeys", ["", "", ""]);
+      let gIdx = await loadKey("bq_geminiKeyIndex", 0);
+      let appearance = await loadKey("bq_appearance", { theme: "green", font: "manrope", fontSize: "medium" });
+
+      if (p === null) p = DEMO_PLAYERS.map((d) => ({ id: uid("pl"), ...d, matchesToday: 0, sitOutStreak: 0, shuttleGamesToday: 0, miscAdjustment: "", paidToday: false }));
+      p = p.map((pl) => ({ ...pl, sitOutStreak: pl.sitOutStreak ?? 0, shuttleGamesToday: pl.shuttleGamesToday ?? 0, miscAdjustment: pl.miscAdjustment !== undefined && String(pl.miscAdjustment) !== "0" ? String(pl.miscAdjustment) : "", paidToday: pl.paidToday ?? false }));
+      c = c.map((court) => ({ ...court, needsShuttle: court.needsShuttle ?? false }));
+
+      setPlayers(p); setQueue(q); setCourts(c); setPendingMatches(pend); setPlayedGroups(groups); setHistory(h);
+      setShuttlePriceState(settings.shuttlePrice !== undefined && String(settings.shuttlePrice) !== "0" ? String(settings.shuttlePrice) : ""); setCourtFeePerHourState(settings.courtFeePerHour !== undefined && String(settings.courtFeePerHour) !== "0" ? String(settings.courtFeePerHour) : "");
+      setCourtFeeMode(settings.courtFeeMode === "sharing" ? "sharing" : "perGame");
+      setTotalCourtFeeState(settings.totalCourtFee !== undefined && String(settings.totalCourtFee) !== "0" ? String(settings.totalCourtFee) : "");
+      setGeminiKeys(Array.isArray(gKeys) && gKeys.length === 3 ? gKeys : ["", "", ""]);
+      setGeminiKeyIndex(Number.isInteger(gIdx) && gIdx >= 0 && gIdx < 3 ? gIdx : 0);
+      setTheme(THEMES[appearance.theme] ? appearance.theme : "green");
+      setFontChoice(FONT_OPTIONS[appearance.font] ? appearance.font : "manrope");
+      setFontSizeChoice(FONT_SIZES[appearance.fontSize] ? appearance.fontSize : "medium");
+      let activities = await loadKey("uc_activities", []);
+      const thisActivity = Array.isArray(activities) ? activities.find((a) => a.id === SESSION_ID) : null;
+      setSessionDateLabel(thisActivity ? thisActivity.label : new Date().toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }));
+      setLastResetAt(meta.lastResetAt || null);
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => { if (loaded) saveKey(sessionKey("bq_players"), players); }, [players, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("bq_queue"), queue); }, [queue, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("bq_courts"), courts); }, [courts, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("bq_pending"), pendingMatches); }, [pendingMatches, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("bq_playedGroups"), playedGroups); }, [playedGroups, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("bq_history"), history); }, [history, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_settings", { shuttlePrice, courtFeePerHour, courtFeeMode, totalCourtFee }); }, [shuttlePrice, courtFeePerHour, courtFeeMode, totalCourtFee, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_geminiKeys", geminiKeys); }, [geminiKeys, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_geminiKeyIndex", geminiKeyIndex); }, [geminiKeyIndex, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_appearance", { theme, font: fontChoice, fontSize: fontSizeChoice }); }, [theme, fontChoice, fontSizeChoice, loaded]);
+
+  const setShuttlePrice = (v) => setShuttlePriceState(sanitizeNumeric(v, false));
+  const setCourtFeePerHour = (v) => setCourtFeePerHourState(sanitizeNumeric(v, false));
+  const setTotalCourtFee = (v) => setTotalCourtFeeState(sanitizeNumeric(v, false));
+  const setPlayerMisc = (id, value) => setPlayers((prev) => prev.map((p) => (p.id === id ? { ...p, miscAdjustment: sanitizeNumeric(value, true) } : p)));
+  const togglePaid = (id) => setPlayers((prev) => prev.map((p) => (p.id === id ? { ...p, paidToday: !p.paidToday } : p)));
+
+  const deleteHistoryEntry = (id) => {
+    setHistory((prev) => {
+      const entry = prev.find((h) => h.id === id);
+      if (!entry) return prev;
+      const ids = [...(entry.teamAIds || []), ...(entry.teamBIds || [])];
+      if (ids.length) {
+        setPlayers((pl) => pl.map((p) => (ids.includes(p.id)
+          ? { ...p, matchesToday: Math.max(0, p.matchesToday - 1), shuttleGamesToday: entry.shuttleUsed ? Math.max(0, (p.shuttleGamesToday || 0) - 1) : p.shuttleGamesToday }
+          : p)));
+        setPlayedGroups((g) => { const idx = g.lastIndexOf(groupKey(ids)); if (idx === -1) return g; const next = [...g]; next.splice(idx, 1); return next; });
+      }
+      return prev.filter((h) => h.id !== id);
+    });
+  };
+  const clearHistory = () => setHistory([]);
+
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 3400); return () => clearTimeout(t); }, [toast]);
+  const notify = (msg, kind = "info") => setToast({ msg, kind });
+
+  // The full-wipe step used by Reset Data — clears this session's queue, courts, history, and
+  // every player's stats (matches/shuttle games/misc/paid), but leaves the roster itself and all
+  // Settings untouched. There's no archive step anymore: each game-day already lives as its own
+  // isolated session (see sessionKey()), and the landing page's Activities list is what lets you
+  // come back to a past session's Bills later — nothing needs to be snapshotted here first.
+  const wipeDayData = () => {
+    setPendingMatches([]);
+    setPlayedGroups([]);
+    setQueue([]);
+    setHistory([]);
+    setCourts((prev) => prev.map((c) => ({ ...c, match: null, needsShuttle: false })));
+    setPlayers((prev) => prev.map((p) => ({ ...p, matchesToday: 0, sitOutStreak: 0, shuttleGamesToday: 0, miscAdjustment: "", paidToday: false })));
+    const now = Date.now();
+    setLastResetAt(now);
+    saveKey(sessionKey("bq_meta"), { lastResetAt: now });
+  };
+  const resetDay = () => {
+    wipeDayData();
+    setResetConfirmOpen(false);
+    notify("Data reset — queue, courts, history, and player stats are cleared. Roster untouched.", "success");
+  };
+  // "Reset Courts & Queue" — the lighter sibling of Reset Data. Only touches the waiting pool,
+  // pending matches, and whatever's live on the courts right now. History, Bills, and the
+  // roster are all left exactly as they are — this is for "the rotation's a mess, let me
+  // clear it" without erasing the day's actual record.
+  const resetCourtsQueue = () => {
+    setPendingMatches([]);
+    setPlayedGroups([]);
+    setQueue([]);
+    setCourts((prev) => prev.map((c) => ({ ...c, match: null, needsShuttle: false })));
+    setResetQueueConfirmOpen(false);
+    notify("Courts & queue cleared. History and Bills were not touched.", "success");
+  };
+  // "Clear Roster" — the roster's own reset: removes every player. Doesn't touch history or Settings.
+  const clearRoster = () => {
+    setPlayers([]);
+    setQueue([]);
+    setPendingMatches([]);
+    setCourts((prev) => prev.map((c) => ({ ...c, match: null, needsShuttle: false })));
+    notify("Roster cleared — all players removed.", "success");
+  };
+
+  // Self-heal: drop any queue entry or pending match that points at a player who no longer
+  // exists, so a stale id can never resurface as a blank slot in a future match. Also strips
+  // duplicate ids (keeping the first occurrence) — a safety net against the same player ever
+  // being double-booked into two matches at once, regardless of which code path caused it.
+  useEffect(() => {
+    if (!loaded) return;
+    setQueue((prev) => {
+      const seen = new Set();
+      const clean = prev.filter((id) => {
+        if (!playersById[id] || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      return clean.length !== prev.length ? clean : prev;
+    });
+    setPendingMatches((prev) => {
+      const valid = []; const releasedIds = [];
+      prev.forEach((m) => {
+        const ids = [...m.teamA, ...m.teamB];
+        if (ids.length === 4 && ids.every((id) => playersById[id])) valid.push(m);
+        else releasedIds.push(...ids.filter((id) => playersById[id]));
+      });
+      if (valid.length !== prev.length) {
+        if (releasedIds.length) setQueue((q) => [...new Set([...q, ...releasedIds])]);
+        return valid;
+      }
+      return prev;
+    });
+  }, [players, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---------- player management ---------- */
+  const addPlayer = (name, level, gender) => {
+    if (!name.trim()) return;
+    setPlayers((prev) => [...prev, { id: uid("pl"), name: name.trim(), level, gender, matchesToday: 0, sitOutStreak: 0, shuttleGamesToday: 0, miscAdjustment: "", paidToday: false }]);
+    notify(`${name.trim()} added to roster.`, "success");
+  };
+  const editPlayer = (id, fields) => setPlayers((prev) => prev.map((p) => (p.id === id ? { ...p, ...fields } : p)));
+  const deletePlayer = (id) => {
+    setPlayers((prev) => prev.filter((p) => p.id !== id));
+    setQueue((prev) => prev.filter((qid) => qid !== id));
+    setPendingMatches((prev) => prev.filter((m) => !m.teamA.includes(id) && !m.teamB.includes(id)));
+    setCourts((prev) => prev.map((c) => (c.match && (c.match.teamA.includes(id) || c.match.teamB.includes(id)) ? { ...c, match: null } : c)));
+  };
+
+  /* ---------- reserved players (queued for a pending match or on court) ---------- */
+  const reservedIds = new Set([
+    ...courts.flatMap((c) => (c.match ? [...c.match.teamA, ...c.match.teamB] : [])),
+    ...pendingMatches.flatMap((m) => [...m.teamA, ...m.teamB]),
+  ]);
+
+  /* ---------- queue management ---------- */
+  const addToQueue = (id) => { if (queue.includes(id) || reservedIds.has(id)) return; setQueue((prev) => [...prev, id]); };
+  const addAllToQueue = () => {
+    const missing = players.filter((p) => !queue.includes(p.id) && !reservedIds.has(p.id)).map((p) => p.id);
+    setQueue((prev) => [...prev, ...missing]);
+  };
+  const removeFromQueue = (id) => setQueue((prev) => prev.filter((qid) => qid !== id));
+  const moveInQueue = (id, dir) => {
+    setQueue((prev) => {
+      const i = prev.indexOf(id); const j = i + dir;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const next = [...prev]; [next[i], next[j]] = [next[j], next[i]]; return next;
+    });
+  };
+
+  /* ---------- court management ---------- */
+  const addCourt = () => setCourts((prev) => {
+    const nextNum = 1 + prev.reduce((max, c) => Math.max(max, parseInt((c.label.match(/\d+/) || [0])[0], 10) || 0), 0);
+    return [...prev, { id: uid("court"), label: `Court ${nextNum}`, match: null, needsShuttle: false }];
+  });
+  const removeCourt = (id) => setCourts((prev) => { const c = prev.find((x) => x.id === id); return c?.match ? prev : prev.filter((x) => x.id !== id); });
+  const toggleShuttleRequest = (courtId) => setCourts((prev) => prev.map((c) => (c.id === courtId ? { ...c, needsShuttle: !c.needsShuttle } : c)));
+
+  // The actual "apply a completed match" effect — takes an explicit court snapshot rather than
+  // re-reading from state, so it still works correctly even if state was just wiped by an
+  // archive that happened moments earlier (see completeMatch below).
+  const performCompleteMatch = (courtId, court) => {
+    if (!court?.match) return;
+    const ids = [...court.match.teamA, ...court.match.teamB];
+    const shuttleUsed = !!court.needsShuttle;
+    setPlayers((pl) => pl.map((p) => (ids.includes(p.id)
+      ? { ...p, matchesToday: p.matchesToday + 1, shuttleGamesToday: (p.shuttleGamesToday || 0) + (shuttleUsed ? 1 : 0) }
+      : p)));
+    setPlayedGroups((g) => [...g, groupKey(ids)].slice(-400));
+    setHistory((h) => [{
+      id: uid("hist"), time: Date.now(), court: court.label, category: court.match.category, shuttleUsed,
+      teamAIds: court.match.teamA, teamBIds: court.match.teamB,
+      teamA: court.match.teamA.map((id) => playersById[id]?.name || "?"),
+      teamB: court.match.teamB.map((id) => playersById[id]?.name || "?"),
+      scoreA: "", scoreB: "",
+    }, ...h].slice(0, 500));
+    setQueue((q) => [...q, ...ids]);
+    setCourts((prev) => prev.map((c) => (c.id === courtId ? { ...c, match: null, needsShuttle: false } : c)));
+  };
+  // Idle-gap check: only relevant if there IS a previous match in this session and at least
+  // 1 hour has passed since it was recorded. This no longer cares which calendar day it was —
+  // sessions are already isolated by sessionKey(), so the only question is "has it been a
+  // while", not "did midnight pass".
+  const shouldPromptIdleWarning = () => {
+    if (history.length === 0) return false;
+    const last = history[0]; // history is newest-first
+    const hoursSince = (Date.now() - last.time) / (1000 * 60 * 60);
+    return hoursSince >= 1;
+  };
+  const completeMatch = (courtId) => {
+    const court = courts.find((c) => c.id === courtId);
+    if (!court?.match) return;
+    if (shouldPromptIdleWarning()) {
+      setPendingIdleMatch({ courtId, court }); // snapshot taken now, before the modal decides
+      return;
+    }
+    performCompleteMatch(courtId, court);
+  };
+  // "Yes, add it" — just logs the match normally, gap or no gap.
+  const confirmIdleMatch = () => {
+    const pending = pendingIdleMatch;
+    setPendingIdleMatch(null);
+    if (pending) performCompleteMatch(pending.courtId, pending.court);
+  };
+  // "Cancel" — backs out entirely; the match stays live on its court, unlogged.
+  const cancelIdleMatch = () => setPendingIdleMatch(null);
+  // Scores are digits-only, blank by default (no forced "0" to delete before typing).
+  const setHistoryScore = (id, field, value) => {
+    const clean = value.replace(/[^0-9]/g, "").slice(0, 3);
+    setHistory((prev) => prev.map((h) => (h.id === id ? { ...h, [field]: clean } : h)));
+  };
+  // Toggles whether a PAST match used a new shuttlecock, correcting the actual shuttle-game
+  // count on the 4 players involved (not just relabeling it) — so Payment/Bills stays accurate.
+  // Players since deleted from the roster are automatically skipped: .map only touches players
+  // that still exist, so there's nothing extra to check for.
+  const toggleShuttleUsed = (historyId) => {
+    const entry = history.find((h) => h.id === historyId);
+    if (!entry) return;
+    const willBeUsed = !entry.shuttleUsed;
+    const delta = willBeUsed ? 1 : -1;
+    const ids = [...(entry.teamAIds || []), ...(entry.teamBIds || [])];
+    setPlayers((prev) => prev.map((p) => (ids.includes(p.id)
+      ? { ...p, shuttleGamesToday: Math.max(0, (p.shuttleGamesToday || 0) + delta) }
+      : p)));
+    setHistory((prev) => prev.map((h) => (h.id === historyId ? { ...h, shuttleUsed: willBeUsed } : h)));
+  };
+  const cancelMatch = (courtId) => {
+    setCourts((prev) => {
+      const court = prev.find((c) => c.id === courtId);
+      if (!court?.match) return prev;
+      const ids = [...court.match.teamA, ...court.match.teamB];
+      setQueue((q) => [...ids, ...q]);
+      return prev.map((c) => (c.id === courtId ? { ...c, match: null } : c));
+    });
+  };
+
+  /* ---------- pending match queue ---------- */
+  const addPendingMatches = (matches, source) => {
+    const built = matches
+      .filter(isCompleteMatch)
+      .map((m) => ({
+        id: uid("pm"),
+        teamA: m.teamA.map((p) => p.id),
+        teamB: m.teamB.map((p) => p.id),
+        category: m.category,
+        source,
+        repeatForced: !!m.repeatForced,
+        createdAt: Date.now(),
+      }));
+    if (built.length) setPendingMatches((prev) => [...prev, ...built]);
+    return built;
+  };
+  const consumeFromQueueAndResetStreak = (matchedIds) => {
+    setQueue((prev) => prev.filter((id) => !matchedIds.has(id)));
+    setPlayers((prev) => prev.map((p) => (matchedIds.has(p.id) ? { ...p, sitOutStreak: 0 } : p)));
+  };
+  const bumpLeftoverStreak = (poolIds, matchedIds) => {
+    setPlayers((prev) => prev.map((p) => (poolIds.has(p.id) && !matchedIds.has(p.id) ? { ...p, sitOutStreak: (p.sitOutStreak || 0) + 1 } : p)));
+  };
+  const cancelPendingMatch = (matchId) => {
+    setPendingMatches((prev) => {
+      const m = prev.find((x) => x.id === matchId);
+      if (!m) return prev;
+      setQueue((q) => [...m.teamA, ...m.teamB, ...q]);
+      return prev.filter((x) => x.id !== matchId);
+    });
+  };
+  const sendPendingToCourt = (matchId, courtId) => {
+    const match = pendingMatches.find((m) => m.id === matchId);
+    const court = courts.find((c) => c.id === courtId);
+    if (!match || !court || court.match) { notify("That court isn't free.", "warn"); return; }
+    setCourts((prev) => prev.map((c) => (c.id === courtId ? { ...c, match: { teamA: match.teamA, teamB: match.teamB, category: match.category, startedAt: Date.now() } } : c)));
+    setPendingMatches((prev) => prev.filter((m) => m.id !== matchId));
+    notify(`Match sent to ${court.label}.`, "success");
+  };
+  // Build Manually's "Start now" button: takes a freshly-built match object directly (never
+  // routes it through pendingMatches first), so there's no stale-state lookup to fail. This is
+  // what the old two-step add-then-send version got wrong.
+  const startManualMatchNow = (m, courtId) => {
+    const court = courts.find((c) => c.id === courtId);
+    if (!isCompleteMatch(m) || !court || court.match) { notify("That court isn't free.", "warn"); return; }
+    setCourts((prev) => prev.map((c) => (c.id === courtId
+      ? { ...c, match: { teamA: m.teamA.map((p) => p.id), teamB: m.teamB.map((p) => p.id), category: m.category, startedAt: Date.now() } }
+      : c)));
+    consumeFromQueueAndResetStreak(new Set(m.players.map((p) => p.id)));
+    notify(`Match sent to ${court.label}.`, "success");
+  };
+  const sendToFirstOpenCourt = (matchId) => {
+    const open = courts.find((c) => !c.match);
+    if (!open) { notify("No court is free yet — finish a match first.", "warn"); return; }
+    sendPendingToCourt(matchId, open.id);
+  };
+
+  // Manual swap editing for pending matches. No penalty to sit-out streak either way — this is
+  // the QM overriding fairness deliberately, not the player losing their place.
+  const swapWithPool = (matchId, team, idx, incomingId) => {
+    const match = pendingMatches.find((m) => m.id === matchId);
+    if (!match) return;
+    const outgoingId = match[team][idx];
+    const updated = pendingMatches.map((m) => {
+      if (m.id !== matchId) return m;
+      const next = { ...m, teamA: [...m.teamA], teamB: [...m.teamB] };
+      next[team][idx] = incomingId;
+      return recomputeMatch(next, playersById);
+    });
+    setPendingMatches(updated);
+    setQueue((q) => [outgoingId, ...q.filter((id) => id !== incomingId)]);
+  };
+  const swapWithSlot = (matchId, team, idx, targetMatchId, targetTeam, targetIdx) => {
+    const match = pendingMatches.find((m) => m.id === matchId);
+    const targetMatch = pendingMatches.find((m) => m.id === targetMatchId);
+    if (!match || !targetMatch) return;
+    const outgoingId = match[team][idx];
+    const incomingId = targetMatch[targetTeam][targetIdx];
+    if (matchId === targetMatchId) {
+      const updated = pendingMatches.map((m) => {
+        if (m.id !== matchId) return m;
+        const next = { ...m, teamA: [...m.teamA], teamB: [...m.teamB] };
+        next[team][idx] = incomingId;
+        next[targetTeam][targetIdx] = outgoingId;
+        return recomputeMatch(next, playersById);
+      });
+      setPendingMatches(updated);
+      return;
+    }
+    const updated = pendingMatches.map((m) => {
+      if (m.id === matchId) {
+        const next = { ...m, teamA: [...m.teamA], teamB: [...m.teamB] };
+        next[team][idx] = incomingId;
+        return recomputeMatch(next, playersById);
+      }
+      if (m.id === targetMatchId) {
+        const next = { ...m, teamA: [...m.teamA], teamB: [...m.teamB] };
+        next[targetTeam][targetIdx] = outgoingId;
+        return recomputeMatch(next, playersById);
+      }
+      return m;
+    });
+    setPendingMatches(updated);
+  };
+
+  /* ---------- generate a full series from the whole pool ---------- */
+  const runGenerate = useCallback((categoryFilter) => {
+    const pool = priorityQueue(queue, playersById);
+    if (pool.length < 4) { notify("Need at least 4 players in the pool to form a match.", "warn"); return; }
+    const groupSet = new Set(playedGroups);
+    const { matches, leftover } = generateSeries(pool, groupSet, categoryFilter);
+    if (matches.length === 0) { notify("No rule-compliant match could be formed from the current pool.", "warn"); return; }
+    addPendingMatches(matches, "Rules engine");
+    const matchedIds = new Set(matches.flatMap((m) => m.players.map((p) => p.id)));
+    const poolIds = new Set(pool.map((p) => p.id));
+    consumeFromQueueAndResetStreak(matchedIds);
+    bumpLeftoverStreak(poolIds, matchedIds);
+    const repeats = matches.filter((m) => m.repeatForced).length;
+    notify(`Formed ${matches.length} match${matches.length > 1 ? "es" : ""} · ${leftover.length} still waiting${repeats ? ` · ${repeats} reused a prior grouping (no other option)` : ""}.`, "success");
+  }, [queue, playersById, playedGroups]);
+
+  const [aiLoading, setAiLoading] = useState(false);
+  // Calls Gemini directly from this device with your own key — works fully standalone,
+  // wherever this file is hosted or opened. Throws a human-readable error on failure instead
+  // of swallowing it, so the UI can explain what actually went wrong.
+  const callAiText = async (apiKey, prompt) => {
+    if (!apiKey) throw new Error("Add your free Gemini API key below first (get one at aistudio.google.com).");
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(data?.error?.message || `Gemini request failed (HTTP ${response.status}).`);
+    const text = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("");
+    if (!text.trim()) throw new Error("Gemini returned an empty response — it may have blocked the prompt, or the key/quota is invalid.");
+    return text;
+  };
+
+  const askAiSeries = useCallback(async (categoryFilter) => {
+    const providerLabel = "Gemini";
+    const pool = priorityQueue(queue, playersById);
+    if (pool.length < 4) { notify("Need at least 4 players in the pool to form a match.", "warn"); return; }
+    setAiLoading(true);
+    try {
+      const compactPool = pool.map((p) => ({ id: p.id, name: p.name, level: p.level, gender: p.gender, matchesToday: p.matchesToday, sitOutStreak: p.sitOutStreak }));
+      const avoidGroups = [...playedGroups].slice(-60).map((k) => k.split("|"));
+      const prompt = `You are a badminton matchmaking assistant scheduling a full round for a queuing app.
+
+PLAYER POOL (priority order — earlier players have waited longer or played less, and should be prioritized for inclusion):
+${JSON.stringify(compactPool)}
+
+GROUPS ALREADY PLAYED TODAY (avoid recreating these exact 4-player groups unless there is truly no other valid combination):
+${JSON.stringify(avoidGroups)}
+
+TASK: Form as many valid 4-player matches as possible from the pool, using each player AT MOST ONCE across all matches. Prioritize including players who appear earlier in the pool list (they have waited longer / played fewer matches) — nobody who could reasonably be included should be left out twice in a row.
+
+RULES (must all hold for every match):
+1. Split each match into teamA and teamB, 2 players each.
+2. There are 4 levels: Beginner, Intermediate, Upper Intermediate, Advance. "Upper Intermediate" is a flexible level — treat it as EITHER "Intermediate" OR "Advance" (whichever makes a pairing legal). The only pairing that is ever banned is a literal Advance player teamed with a literal Beginner player (Upper Intermediate is never that literal Advance or Beginner, so Upper Intermediate can always partner a Beginner by presenting as Intermediate).
+3. Both teams in a match must be able to present as the SAME 2-level composition as each other (using Upper Intermediate's flexibility where relevant). Example: a team of {Upper Intermediate, Beginner} can face another {Upper Intermediate, Beginner} team, or a literal {Intermediate, Beginner} team — both present as "Intermediate+Beginner".
+4. Category must be one of "Men's Doubles" (both teams all-male), "Women's Doubles" (both teams all-female), or "Mixed Doubles" (each team has exactly one male and one female).
+${categoryFilter ? `5. Every match's category MUST be "${categoryFilter}".` : `5. Don't default to one category systematically (e.g. always picking Mixed Doubles just because it's usually the easiest combination to find). Vary the category naturally across the matches you form, based on who's actually available in the pool, rather than favoring any one category by default.`}
+
+Respond with ONLY raw JSON, no markdown fences, no commentary, in exactly this shape:
+{"matches":[{"teamA":["<id>","<id>"],"teamB":["<id>","<id>"],"category":"Men's Doubles|Women's Doubles|Mixed Doubles","reason":"one short sentence"}]}`;
+
+      const rawText = await callAiText(geminiKey.trim(), prompt);
+      const clean = rawText.replace(/```json|```/g, "").trim();
+      let parsed;
+      try { parsed = JSON.parse(clean); } catch { throw new Error(`${providerLabel} didn't return valid JSON — try again, or use Generate Matches.`); }
+
+      const usedIds = new Set();
+      const validMatches = [];
+      for (const raw of parsed.matches || []) {
+        const teamA = (raw.teamA || []).map((id) => playersById[id]).filter(Boolean);
+        const teamB = (raw.teamB || []).map((id) => playersById[id]).filter(Boolean);
+        if (teamA.length !== 2 || teamB.length !== 2) continue;
+        const ids = [...teamA, ...teamB].map((p) => p.id);
+        if (ids.some((id) => usedIds.has(id))) continue; // no reuse across matches in this batch
+        if (!ids.every((id) => queue.includes(id))) continue; // must come from the pool
+        const levelOk = teamsCompatible(teamA.map((p) => p.level), teamB.map((p) => p.level));
+        const category = detectCategory(teamA, teamB);
+        if (!levelOk || !category || (categoryFilter && category !== categoryFilter)) continue;
+        ids.forEach((id) => usedIds.add(id));
+        validMatches.push({ teamA, teamB, category, players: [...teamA, ...teamB], reason: raw.reason });
+      }
+
+      // mop up anything the AI missed using the rules engine, from whatever's left
+      const leftoverPool = pool.filter((p) => !usedIds.has(p.id));
+      const groupSet = new Set(playedGroups);
+      const { matches: fallbackMatches } = generateSeries(leftoverPool, groupSet, categoryFilter);
+      fallbackMatches.forEach((m) => m.players.forEach((p) => usedIds.add(p.id)));
+
+      const allMatches = [...validMatches, ...fallbackMatches];
+      if (allMatches.length === 0) {
+        notify(`${providerLabel} couldn't form a valid match either — try adding more players.`, "warn");
+        return;
+      }
+      if (validMatches.length) addPendingMatches(validMatches, providerLabel);
+      if (fallbackMatches.length) addPendingMatches(fallbackMatches, "Rules engine (fallback)");
+      const poolIds = new Set(pool.map((p) => p.id));
+      consumeFromQueueAndResetStreak(usedIds);
+      bumpLeftoverStreak(poolIds, usedIds);
+      notify(`${providerLabel} formed ${validMatches.length} match${validMatches.length !== 1 ? "es" : ""}${fallbackMatches.length ? `, rules engine added ${fallbackMatches.length} more` : ""}.`, "success");
+    } catch (e) {
+      const msg = e.message || "unknown error";
+      const isQuota = /rate limit|quota|429/i.test(msg);
+      const hint = isQuota ? " Try Generate Matches (instant, no AI needed), or wait a bit and retry." : "";
+      notify(`${providerLabel} matchmaking failed: ${msg}.${hint}`, "warn");
+    } finally {
+      setAiLoading(false);
+    }
+  }, [queue, playersById, playedGroups, geminiKeyIndex]);
+
+  const fontFamily = (FONT_OPTIONS[fontChoice] || FONT_OPTIONS.manrope).stack;
+  const fontScale = FONT_SIZES[fontSizeChoice] ?? 1;
+  const exportColors = { ...(THEMES[theme] || THEMES.green), ...SEMANTIC_COLORS };
+  const rootStyle = { zoom: fontScale };
+
+  if (!loaded) {
+    return (
+      <ThemeContext.Provider value={THEMES[theme] || THEMES.green}>
+        <div className="bq-root bq-loading" style={rootStyle}><Loader2 className="bq-spin" size={28} /><span>Loading queue…</span><Styles fontFamily={fontFamily} /></div>
+      </ThemeContext.Provider>
+    );
+  }
+
+  return (
+    <ThemeContext.Provider value={THEMES[theme] || THEMES.green}>
+    <div className="bq-root" style={rootStyle}>
+      <Styles fontFamily={fontFamily} />
+      <Header sessionDateLabel={sessionDateLabel} />
+      <TabBar tab={tab} setTab={setTab} counts={{ courts: courts.filter((c) => c.match).length, players: players.length, history: history.length }} />
+
+      <main className="bq-main">
+        {tab === "courts" && (
+          <CourtsTab
+            courts={courts} playersById={playersById} queue={queue} players={players}
+            pendingMatches={pendingMatches} aiLoading={aiLoading}
+            geminiKeyIndex={geminiKeyIndex} geminiKeys={geminiKeys}
+            addCourt={addCourt} removeCourt={removeCourt} toggleShuttleRequest={toggleShuttleRequest}
+            runGenerate={runGenerate} askAiSeries={askAiSeries}
+            openManual={() => setManualOpen(true)}
+            completeMatch={completeMatch} cancelMatch={cancelMatch}
+            sendPendingToCourt={sendPendingToCourt} sendToFirstOpenCourt={sendToFirstOpenCourt} cancelPendingMatch={cancelPendingMatch}
+            swapWithPool={swapWithPool} swapWithSlot={swapWithSlot}
+            addToQueue={addToQueue} addAllToQueue={addAllToQueue} removeFromQueue={removeFromQueue} moveInQueue={moveInQueue}
+            reservedIds={reservedIds}
+          />
+        )}
+        {tab === "players" && (
+          <PlayersTab players={players} addPlayer={addPlayer} editPlayer={editPlayer} deletePlayer={deletePlayer} addToQueue={addToQueue} queue={queue} reservedIds={reservedIds} clearRoster={clearRoster} />
+        )}
+        {tab === "history" && <HistoryTab history={history} deleteHistoryEntry={deleteHistoryEntry} clearHistory={clearHistory} setHistoryScore={setHistoryScore} toggleShuttleUsed={toggleShuttleUsed} />}
+        {tab === "ranking" && <RankingTab players={players} history={history} />}
+        {tab === "payment" && (
+          <PaymentTab
+            players={players} shuttlePrice={shuttlePrice} setShuttlePrice={setShuttlePrice} courtFeePerHour={courtFeePerHour} setCourtFeePerHour={setCourtFeePerHour}
+            courtFeeMode={courtFeeMode} setCourtFeeMode={setCourtFeeMode} totalCourtFee={totalCourtFee} setTotalCourtFee={setTotalCourtFee}
+            setPlayerMisc={setPlayerMisc} togglePaid={togglePaid} colors={exportColors}
+          />
+        )}
+        {tab === "settings" && (
+          <SettingsTab
+            geminiKeys={geminiKeys} setGeminiKeys={setGeminiKeys}
+            geminiKeyIndex={geminiKeyIndex} setGeminiKeyIndex={setGeminiKeyIndex}
+            theme={theme} setTheme={setTheme}
+            fontChoice={fontChoice} setFontChoice={setFontChoice}
+            fontSizeChoice={fontSizeChoice} setFontSizeChoice={setFontSizeChoice}
+          />
+        )}
+      </main>
+
+      <footer className="bq-footer">
+        <span className="bq-muted-sm">Last reset: {formatResetTime(lastResetAt)}</span>
+        <div style={{ display: "flex", gap: 14 }}>
+          <button className="bq-footer-reset-btn" onClick={() => setResetQueueConfirmOpen(true)}>Reset Courts &amp; Queue…</button>
+          <button className="bq-footer-reset-btn" onClick={() => setResetConfirmOpen(true)}>Reset Data…</button>
+        </div>
+      </footer>
+
+      {manualOpen && (
+        <ManualMatchModal
+          queue={queue} playersById={playersById} courts={courts}
+          onClose={() => setManualOpen(false)}
+          onAddPending={(m) => { addPendingMatches([m], "Manual"); consumeFromQueueAndResetStreak(new Set(m.players.map((p) => p.id))); setManualOpen(false); }}
+          onStartNow={(m, courtId) => { startManualMatchNow(m, courtId); setManualOpen(false); }}
+        />
+      )}
+
+      {resetConfirmOpen && (
+        <ResetDayModal playerCount={players.length} onClose={() => setResetConfirmOpen(false)} onConfirm={resetDay} />
+      )}
+
+      {resetQueueConfirmOpen && (
+        <ResetCourtsQueueModal onClose={() => setResetQueueConfirmOpen(false)} onConfirm={resetCourtsQueue} />
+      )}
+
+      {pendingIdleMatch && (
+        <IdleWarningModal onConfirm={confirmIdleMatch} onCancel={cancelIdleMatch} />
+      )}
+
+      {toast && <div className={`bq-toast bq-toast-${toast.kind}`}>{toast.msg}</div>}
+    </div>
+    </ThemeContext.Provider>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Header + Tabs                                                          */
+/* ---------------------------------------------------------------------- */
+function Header({ sessionDateLabel }) {
+  return (
+    <header className="bq-header">
+      <div className="bq-brand-row">
+        <img src="undercover-logo-wide.png" alt="Undercover Badminton Club" className="bq-brand-logo" />
+        <div className="bq-brand-text">
+          <h1>Casual games</h1>
+          <span className="bq-header-date">{sessionDateLabel}</span>
+        </div>
+        <a href="index.html" className="bq-back-circle" title="Back to Undercover home" aria-label="Back to Undercover home">
+          <ChevronLeft size={20} />
+        </a>
+      </div>
+      <div className="bq-header-line" />
+    </header>
+  );
+}
+function TabBar({ tab, setTab, counts }) {
+  const items = [
+    { key: "courts", label: "Courts & Queue", icon: Swords, count: counts.courts },
+    { key: "players", label: "Players", icon: Users, count: counts.players },
+    { key: "history", label: "History", icon: Clock, count: counts.history },
+    { key: "ranking", label: "Ranking", icon: Trophy, count: 0 },
+    { key: "payment", label: "Payment", icon: Wallet, count: 0 },
+  ];
+  return (
+    <nav className="bq-tabbar">
+      {items.map(({ key, label, icon: Icon, count }) => (
+        <button key={key} onClick={() => setTab(key)} className={`bq-tab ${tab === key ? "bq-tab-active" : ""}`}>
+          <Icon size={16} /><span>{label}</span>{count > 0 && <span className="bq-tab-count">{count}</span>}
+        </button>
+      ))}
+      <button onClick={() => setTab("settings")} className={`bq-tab bq-tab-icon-only ${tab === "settings" ? "bq-tab-active" : ""}`} title="Settings" aria-label="Settings">
+        <Settings size={16} />
+      </button>
+    </nav>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Courts & Queue tab                                                     */
+/* ---------------------------------------------------------------------- */
+function CourtsTab({
+  courts, playersById, queue, players, pendingMatches, aiLoading,
+  geminiKeyIndex, geminiKeys,
+  addCourt, removeCourt, toggleShuttleRequest, runGenerate, askAiSeries, openManual,
+  completeMatch, cancelMatch, sendPendingToCourt, sendToFirstOpenCourt, cancelPendingMatch,
+  swapWithPool, swapWithSlot,
+  addToQueue, addAllToQueue, removeFromQueue, moveInQueue, reservedIds,
+}) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState(null);
+  const [editingMatchId, setEditingMatchId] = useState(null);
+  const [swapPickerFor, setSwapPickerFor] = useState(null);
+  const availableToAdd = players.filter((p) => !queue.includes(p.id) && !reservedIds.has(p.id));
+  const openCourts = courts.filter((c) => !c.match);
+  const geminiReady = (geminiKeys[geminiKeyIndex] || "").trim().length > 0;
+  const matchNumberById = Object.fromEntries(pendingMatches.map((m, i) => [m.id, i + 1]));
+
+  return (
+    <div className="bq-courts-layout">
+      <section className="bq-courts-col">
+        <div className="bq-generate-bar">
+          <div className="bq-chip-row">
+            {["Men's Doubles", "Women's Doubles", "Mixed Doubles"].map((cat) => (
+              <button key={cat} className={`bq-chip ${categoryFilter === cat ? "bq-chip-active" : ""}`} onClick={() => setCategoryFilter(categoryFilter === cat ? null : cat)}>{cat}</button>
+            ))}
+          </div>
+          <div className="bq-row-gap">
+            <Tooltip text="Instantly forms matches locally. Works fully offline.">
+              <button className="bq-btn bq-btn-primary" onClick={() => runGenerate(categoryFilter)} disabled={aiLoading} title={aiLoading ? "Wait for Ask Gemini to finish first" : undefined}><Shuffle size={15} /> Generate matches</button>
+            </Tooltip>
+            <Tooltip text={geminiReady ? "Asks Gemini AI to suggest matches" : "Add a Gemini key in Settings first"}>
+              <button className="bq-btn bq-btn-ghost" onClick={() => askAiSeries(categoryFilter)} disabled={aiLoading || !geminiReady}>
+                {aiLoading ? <Loader2 size={15} className="bq-spin" /> : <Sparkles size={15} />} Ask Gemini
+              </button>
+            </Tooltip>
+            <button className="bq-btn bq-btn-ghost" onClick={openManual} disabled={aiLoading} title={aiLoading ? "Wait for Ask Gemini to finish first" : undefined}><Wand2 size={15} /> Build manually</button>
+          </div>
+        </div>
+
+        {pendingMatches.length > 0 && (
+          <div className="bq-pending-section">
+            <div className="bq-section-head"><h2>Pending Matches <span className="bq-muted-sm">({pendingMatches.length})</span></h2></div>
+            <div className="bq-pending-row">
+              {pendingMatches.map((m, i) => (
+                <PendingMatchCard key={m.id} number={i + 1} match={m} playersById={playersById} openCourts={openCourts}
+                  onSendFirst={() => sendToFirstOpenCourt(m.id)}
+                  onSendTo={(courtId) => sendPendingToCourt(m.id, courtId)}
+                  onCancel={() => cancelPendingMatch(m.id)}
+                  isEditing={editingMatchId === m.id}
+                  onToggleEdit={() => { setEditingMatchId(editingMatchId === m.id ? null : m.id); setSwapPickerFor(null); }}
+                  swapPickerFor={swapPickerFor} setSwapPickerFor={setSwapPickerFor}
+                  pendingMatches={pendingMatches} queue={queue} matchNumberById={matchNumberById}
+                  onSwapWithPool={(team, idx, incomingId) => swapWithPool(m.id, team, idx, incomingId)}
+                  onSwapWithSlot={(team, idx, targetMatchId, targetTeam, targetIdx) => swapWithSlot(m.id, team, idx, targetMatchId, targetTeam, targetIdx)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="bq-section-head" style={{ marginTop: 16 }}>
+          <h2>Courts</h2>
+          <button className="bq-btn bq-btn-ghost" onClick={addCourt}><Plus size={15} /> Add court</button>
+        </div>
+        <div className="bq-court-grid">
+          {courts.map((c) => (
+            <CourtCard key={c.id} court={c} playersById={playersById} pendingCount={pendingMatches.length}
+              onStartNext={() => pendingMatches[0] && sendPendingToCourt(pendingMatches[0].id, c.id)}
+              onComplete={() => completeMatch(c.id)} onCancel={() => cancelMatch(c.id)} onRemove={() => removeCourt(c.id)}
+              onToggleShuttle={() => toggleShuttleRequest(c.id)} />
+          ))}
+        </div>
+      </section>
+
+      <aside className="bq-queue-col">
+        <div className="bq-section-head">
+          <h2>Player Pool <span className="bq-muted-sm">({queue.length})</span></h2>
+          <div className="bq-row-gap">
+            <button className="bq-btn bq-btn-ghost" onClick={() => setShowAdd((s) => !s)}><UserPlus size={15} /> Add</button>
+            <button className="bq-btn bq-btn-ghost" onClick={addAllToQueue}><ListPlus size={15} /> Add all</button>
+          </div>
+        </div>
+
+        {showAdd && (
+          <div className="bq-add-panel">
+            {availableToAdd.length === 0 && <p className="bq-muted-sm">Everyone is already queued or playing.</p>}
+            {availableToAdd.map((p) => (
+              <button key={p.id} className="bq-add-row" onClick={() => addToQueue(p.id)}>
+                <Avatar name={p.name} size={26} /><span className="bq-add-name">{p.name}</span><LevelBadge level={p.level} abbreviate /><Plus size={14} />
+              </button>
+            ))}
+          </div>
+        )}
+
+        <ol className="bq-queue-list">
+          {queue.length === 0 && <p className="bq-empty">Pool is empty. Add players to get started.</p>}
+          {queue.map((id, idx) => {
+            const p = playersById[id];
+            if (!p) return null;
+            return (
+              <li key={id} className="bq-queue-item">
+                <span className="bq-queue-pos">{idx + 1}</span>
+                <Avatar name={p.name} size={30} />
+                <div className="bq-queue-info">
+                  <div className="bq-queue-name">{p.name} <GenderDot gender={p.gender} /></div>
+                  <div className="bq-queue-meta">
+                    <LevelBadge level={p.level} abbreviate />
+                    <span className="bq-mono">{p.matchesToday} played</span>
+                    {p.sitOutStreak > 0 && <span className="bq-streak-badge" title="Rounds sat out in a row">⏳ {p.sitOutStreak}</span>}
+                  </div>
+                </div>
+                <div className="bq-queue-actions">
+                  <button title="Move up" onClick={() => moveInQueue(id, -1)}><ChevronUp size={15} /></button>
+                  <button title="Move down" onClick={() => moveInQueue(id, 1)}><ChevronDown size={15} /></button>
+                  <button title="Remove from pool" onClick={() => removeFromQueue(id)}><X size={15} /></button>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </aside>
+    </div>
+  );
+}
+
+function PendingMatchCard({
+  match, number, playersById, openCourts, onSendFirst, onSendTo, onCancel,
+  isEditing, onToggleEdit, swapPickerFor, setSwapPickerFor, pendingMatches, queue, matchNumberById,
+  onSwapWithPool, onSwapWithSlot,
+}) {
+  const liveCheck = evaluateTeamIds(match.teamA, match.teamB, playersById);
+  const cardClick = isEditing ? undefined : onSendFirst;
+  return (
+    <div className={`bq-pending-card ${isEditing ? "bq-pending-card-editing" : ""}`} onClick={cardClick} role="button" tabIndex={0}>
+      <div className="bq-pending-head">
+        <span className="bq-pending-title">Match {number}</span>
+        <span className="bq-pending-source">{match.source}</span>
+        <button className="bq-icon-btn" title="Break up — return players to pool" onClick={(e) => { e.stopPropagation(); onCancel(); }}><X size={14} /></button>
+      </div>
+      {match.repeatForced && <div className="bq-warn-inline"><AlertTriangle size={12} /> Repeat grouping (no other option)</div>}
+      {!liveCheck.valid && <div className="bq-warn-inline"><AlertTriangle size={12} /> Not a standard rule combo — override allowed</div>}
+      <CategoryChip category={liveCheck.category || match.category} />
+      <div className="bq-teams" style={{ marginTop: 8 }}>
+        {isEditing ? (
+          <>
+            <EditableTeam team="teamA" ids={match.teamA} playersById={playersById} matchId={match.id}
+              swapPickerFor={swapPickerFor} setSwapPickerFor={setSwapPickerFor} pendingMatches={pendingMatches} queue={queue}
+              matchNumberById={matchNumberById} onSwapWithPool={onSwapWithPool} onSwapWithSlot={onSwapWithSlot} />
+            <div className="bq-vs">VS</div>
+            <EditableTeam team="teamB" ids={match.teamB} playersById={playersById} matchId={match.id}
+              swapPickerFor={swapPickerFor} setSwapPickerFor={setSwapPickerFor} pendingMatches={pendingMatches} queue={queue}
+              matchNumberById={matchNumberById} onSwapWithPool={onSwapWithPool} onSwapWithSlot={onSwapWithSlot} />
+          </>
+        ) : (
+          <>
+            <TeamBlock ids={match.teamA} playersById={playersById} abbreviate />
+            <div className="bq-vs">VS</div>
+            <TeamBlock ids={match.teamB} playersById={playersById} abbreviate />
+          </>
+        )}
+      </div>
+      <div className="bq-pending-footer" onClick={(e) => e.stopPropagation()}>
+        <button className="bq-edit-players-btn" onClick={onToggleEdit}>
+          <Pencil size={12} /> {isEditing ? "Done editing" : "Edit players"}
+        </button>
+        <div className="bq-pending-send">
+          {openCourts.length === 0 && <span className="bq-muted-sm">No court free yet</span>}
+          {openCourts.map((c) => (
+            <button key={c.id} className="bq-court-pill" onClick={() => onSendTo(c.id)}>
+              <ArrowRight size={12} /> {c.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+// A team column in edit mode: each player is a clickable row that opens the swap picker.
+function EditableTeam({ team, ids, playersById, matchId, swapPickerFor, setSwapPickerFor, pendingMatches, queue, matchNumberById, onSwapWithPool, onSwapWithSlot }) {
+  return (
+    <div className="bq-team">
+      {ids.map((id, idx) => {
+        const p = playersById[id];
+        if (!p) return null;
+        const isOpen = swapPickerFor && swapPickerFor.matchId === matchId && swapPickerFor.team === team && swapPickerFor.idx === idx;
+        return (
+          <div key={id} className="bq-team-player-edit-wrap">
+            <button className="bq-team-player bq-team-player-edit" onClick={() => setSwapPickerFor(isOpen ? null : { matchId, team, idx })}>
+              <Avatar name={p.name} size={30} />
+              <div><div className="bq-team-name">{p.name}</div><LevelBadge level={p.level} abbreviate /></div>
+              <Pencil size={11} className="bq-team-edit-icon" />
+            </button>
+            {isOpen && (
+              <SwapPicker
+                originId={id} originMatchId={matchId} originTeam={team} originIdx={idx}
+                pendingMatches={pendingMatches} queue={queue} playersById={playersById} matchNumberById={matchNumberById}
+                onClose={() => setSwapPickerFor(null)}
+                onPick={(candidate) => {
+                  if (candidate.type === "pool") onSwapWithPool(team, idx, candidate.id);
+                  else onSwapWithSlot(team, idx, candidate.matchId, candidate.team, candidate.idx);
+                  setSwapPickerFor(null);
+                }}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+// Popover listing every swappable candidate: the other 3 in this match, the pool, and every
+// other pending match's players. Court players (already in a live game) are excluded.
+function SwapPicker({ originId, originMatchId, originTeam, originIdx, pendingMatches, queue, playersById, matchNumberById, onClose, onPick }) {
+  const originPlayer = playersById[originId];
+  const currentMatch = pendingMatches.find((m) => m.id === originMatchId);
+  const sameMatchItems = [];
+  if (currentMatch) {
+    ["teamA", "teamB"].forEach((team) => {
+      currentMatch[team].forEach((id, idx) => {
+        if (team === originTeam && idx === originIdx) return;
+        sameMatchItems.push({ id, team, idx, matchId: originMatchId });
+      });
+    });
+  }
+  const poolItems = queue.map((id) => ({ id, type: "pool" }));
+  const otherMatchGroups = pendingMatches
+    .filter((m) => m.id !== originMatchId)
+    .map((m) => ({
+      label: `Match ${matchNumberById[m.id] || "?"}`,
+      items: [
+        ...m.teamA.map((id, idx) => ({ id, team: "teamA", idx, matchId: m.id })),
+        ...m.teamB.map((id, idx) => ({ id, team: "teamB", idx, matchId: m.id })),
+      ],
+    }));
+
+  const renderItem = (item) => {
+    const p = playersById[item.id];
+    if (!p) return null;
+    return (
+      <button key={`${item.matchId || "pool"}-${item.id}`} className="bq-swap-candidate" onClick={() => onPick(item)}>
+        <Avatar name={p.name} size={22} />
+        <div className="bq-swap-candidate-info">
+          <span className="bq-swap-candidate-name">{p.name}</span>
+          <LevelBadge level={p.level} abbreviate />
+        </div>
+      </button>
+    );
+  };
+
+  return (
+    <div className="bq-swap-picker" onClick={(e) => e.stopPropagation()}>
+      <div className="bq-swap-picker-head">
+        <span>Swap out {originPlayer?.name}</span>
+        <button className="bq-icon-btn" onClick={onClose}><X size={13} /></button>
+      </div>
+      <div className="bq-swap-picker-list">
+        {sameMatchItems.length > 0 && (
+          <div className="bq-swap-section">
+            <div className="bq-swap-section-label">This match</div>
+            {sameMatchItems.map(renderItem)}
+          </div>
+        )}
+        <div className="bq-swap-section">
+          <div className="bq-swap-section-label">Pool</div>
+          {poolItems.length === 0 && <p className="bq-muted-sm" style={{ padding: "0 4px" }}>Empty</p>}
+          {poolItems.map(renderItem)}
+        </div>
+        {otherMatchGroups.map((g) => g.items.length > 0 && (
+          <div key={g.label} className="bq-swap-section">
+            <div className="bq-swap-section-label">{g.label}</div>
+            {g.items.map(renderItem)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CourtCard({ court, playersById, pendingCount, onStartNext, onComplete, onCancel, onRemove, onToggleShuttle }) {
+  const m = court.match;
+  return (
+    <div className="bq-court-card">
+      <CourtLines opacity={0.06} />
+      <div className="bq-court-head">
+        <span className="bq-court-label">{court.label}</span>
+        {!m && <button className="bq-icon-btn" title="Remove court" onClick={onRemove}><Trash2 size={14} /></button>}
+      </div>
+
+      <label className={`bq-checkbox-row ${court.needsShuttle ? "bq-checkbox-row-active" : ""}`} style={{ zIndex: 1 }}>
+        <input type="checkbox" checked={!!court.needsShuttle} onChange={onToggleShuttle} />
+        <span>🏸 New shuttlecock</span>
+      </label>
+
+      {!m ? (
+        <div className="bq-court-empty">
+          {pendingCount > 0 ? (
+            <>
+              <p>Court open</p>
+              <button className="bq-btn bq-btn-primary" onClick={onStartNext}><ArrowRight size={15} /> Start next match</button>
+            </>
+          ) : (
+            <p>No pending matches yet — generate matches or build one manually.</p>
+          )}
+        </div>
+      ) : (
+        <div className="bq-match">
+          <CategoryChip category={m.category} />
+          <div className="bq-teams">
+            <TeamBlock ids={m.teamA} playersById={playersById} abbreviate />
+            <div className="bq-vs">VS</div>
+            <TeamBlock ids={m.teamB} playersById={playersById} abbreviate />
+          </div>
+          <div className="bq-match-actions">
+            <button className="bq-btn bq-btn-ghost" onClick={onCancel}><LogOut size={14} /> Cancel</button>
+            <button className="bq-btn bq-btn-primary" onClick={onComplete}><Check size={14} /> Complete match</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Manual match builder                                                   */
+/* ---------------------------------------------------------------------- */
+function ManualMatchModal({ queue, playersById, courts, onClose, onAddPending, onStartNow }) {
+  const [manualIds, setManualIds] = useState([]);
+  const [pairingIdx, setPairingIdx] = useState(0);
+  const queuePlayers = queue.map((id) => playersById[id]).filter(Boolean);
+  const openCourts = courts.filter((c) => !c.match);
+
+  const toggle = (id) => setManualIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev.length >= 4 ? prev : [...prev, id]));
+  const four = manualIds.map((id) => playersById[id]).filter(Boolean);
+  const split = four.length === 4 ? evaluateSplit(four, pairingIdx % 3) : null;
+  const built = split ? { teamA: split.teamA, teamB: split.teamB, category: split.category, players: four } : null;
+
+  return (
+    <div className="bq-modal-overlay" onClick={onClose}>
+      <div className="bq-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="bq-modal-head"><h3><Wand2 size={17} /> Build match manually</h3><button className="bq-icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="bq-modal-body">
+          <p className="bq-muted-sm">Pick exactly 4 players from the pool. You can start it even if it doesn't meet the standard rules.</p>
+          <div className="bq-manual-grid">
+            {queuePlayers.map((p) => (
+              <button key={p.id} className={`bq-manual-pick ${manualIds.includes(p.id) ? "bq-manual-pick-active" : ""}`} onClick={() => toggle(p.id)}>
+                <Avatar name={p.name} size={26} />
+                <div className="bq-manual-pick-info">
+                  <span className="bq-manual-pick-name">{p.name}</span>
+                  <LevelBadge level={p.level} />
+                </div>
+                <GenderDot gender={p.gender} />
+              </button>
+            ))}
+          </div>
+
+          {four.length === 4 && (
+            <div className="bq-suggestion" style={{ marginTop: 12 }}>
+              <div className="bq-row-gap">
+                <button className="bq-btn bq-btn-ghost" onClick={() => setPairingIdx((i) => (i + 1) % 3)}><RefreshCw size={14} /> Try other pairing</button>
+                {!split.valid && <span className="bq-warn-inline"><AlertTriangle size={13} /> Not a standard rule combo — override allowed</span>}
+              </div>
+              <CategoryChip category={split.category} />
+              <div className="bq-teams" style={{ marginTop: 10 }}>
+                <TeamBlock ids={split.teamA.map((p) => p.id)} playersById={playersById} />
+                <div className="bq-vs">VS</div>
+                <TeamBlock ids={split.teamB.map((p) => p.id)} playersById={playersById} />
+              </div>
+            </div>
+          )}
+
+          <div className="bq-modal-actions">
+            <button className="bq-btn bq-btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="bq-btn bq-btn-ghost" disabled={!built} onClick={() => onAddPending(built)}>Add to pending queue</button>
+            {openCourts[0] && <button className="bq-btn bq-btn-primary" disabled={!built} onClick={() => onStartNow(built, openCourts[0].id)}>Start now on {openCourts[0].label}</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Reset-day confirmation modal                                           */
+/* ---------------------------------------------------------------------- */
+function ResetDayModal({ playerCount, onClose, onConfirm }) {
+  return (
+    <div className="bq-modal-overlay" onClick={onClose}>
+      <div className="bq-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+        <div className="bq-modal-head"><h3><AlertTriangle size={17} /> Reset Data?</h3><button className="bq-icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="bq-modal-body">
+          <p className="bq-muted-sm">This clears everything in this session except the roster ({playerCount} player{playerCount !== 1 ? "s" : ""} stay):</p>
+          <ul className="bq-reset-list">
+            <li>Match history &amp; recorded scores (also clears the Ranking tab)</li>
+            <li>Matches played, sit-out streak, shuttlecock count, misc adjustments — back to 0/blank for every player</li>
+            <li>The waiting pool and any pending matches</li>
+            <li>Any matches currently in progress on a court — ended, not logged</li>
+            <li>"Already played together" grouping history</li>
+          </ul>
+          <p className="bq-muted-sm">The roster itself and all Settings (theme, font, Gemini keys, fees) are <b>not</b> touched. This session stays put — go back to the Undercover home screen to start a new one instead of overwriting this session's record.</p>
+          <div className="bq-modal-actions">
+            <button className="bq-btn bq-btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="bq-btn bq-btn-danger" onClick={onConfirm}><Check size={14} /> Yes, reset data</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ResetCourtsQueueModal({ onClose, onConfirm }) {
+  return (
+    <div className="bq-modal-overlay" onClick={onClose}>
+      <div className="bq-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+        <div className="bq-modal-head"><h3><AlertTriangle size={17} /> Reset Courts &amp; Queue?</h3><button className="bq-icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="bq-modal-body">
+          <p className="bq-muted-sm">This clears just the rotation — the waiting pool, any pending matches, and whatever's currently live on the courts. It does <b>not</b> touch History, Rankings, Bills, or the roster.</p>
+          <div className="bq-modal-actions">
+            <button className="bq-btn bq-btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="bq-btn bq-btn-danger" onClick={onConfirm}><Check size={14} /> Yes, reset courts &amp; queue</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ---------------------------------------------------------------------- */
+/*  Idle-gap warning modal                                                 */
+/* ---------------------------------------------------------------------- */
+function IdleWarningModal({ onConfirm, onCancel }) {
+  return (
+    <div className="bq-modal-overlay" onClick={onCancel}>
+      <div className="bq-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
+        <div className="bq-modal-head"><h3><AlertTriangle size={17} /> Still going?</h3><button className="bq-icon-btn" onClick={onCancel}><X size={18} /></button></div>
+        <div className="bq-modal-body">
+          <p className="bq-muted-sm">It's been over an hour since the last match in this session — still want to log this one here?</p>
+          <div className="bq-modal-actions">
+            <button className="bq-btn bq-btn-ghost" onClick={onCancel}>Cancel</button>
+            <button className="bq-btn bq-btn-primary" onClick={onConfirm}><Check size={14} /> Yes, add it</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ---------------------------------------------------------------------- */
+/*  Players tab                                                            */
+/* ---------------------------------------------------------------------- */
+function PlayersTab({ players, addPlayer, editPlayer, deletePlayer, addToQueue, queue, reservedIds, clearRoster }) {
+  const [name, setName] = useState("");
+  const [level, setLevel] = useState("Beginner");
+  const [gender, setGender] = useState("Male");
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState({});
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const t = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirmClear]);
+  const handleClearClick = () => {
+    if (!confirmClear) { setConfirmClear(true); return; }
+    clearRoster();
+    setConfirmClear(false);
+  };
+
+  const submitAdd = () => { addPlayer(name, level, gender); setName(""); };
+  const startEdit = (p) => { setEditingId(p.id); setEditDraft({ name: p.name, level: p.level, gender: p.gender }); };
+  const saveEdit = () => { editPlayer(editingId, editDraft); setEditingId(null); };
+
+  return (
+    <div className="bq-players-layout">
+      <div className="bq-add-form">
+        <h2>Add player</h2>
+        <input placeholder="Player name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitAdd(); }} className="bq-input" />
+        <select value={level} onChange={(e) => setLevel(e.target.value)} className="bq-select" style={{ width: "100%" }}>{LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}</select>
+        <select value={gender} onChange={(e) => setGender(e.target.value)} className="bq-select" style={{ width: "100%" }}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+        <button type="button" className="bq-btn bq-btn-primary" style={{ width: "100%", justifyContent: "center" }} onClick={submitAdd}><Plus size={15} /> Add to roster</button>
+      </div>
+
+      <div className="bq-roster">
+        <div className="bq-section-head">
+          <h2>Roster <span className="bq-muted-sm">({players.length})</span></h2>
+          {players.length > 0 && (
+            <button className={`bq-btn ${confirmClear ? "bq-btn-danger" : "bq-btn-ghost"}`} onClick={handleClearClick}>
+              <Trash2 size={14} /> {confirmClear ? "Click again to confirm" : "Clear Roster"}
+            </button>
+          )}
+        </div>
+        <div className="bq-roster-list">
+          {players.length === 0 && <p className="bq-empty">No players yet — add your first player.</p>}
+          {players.map((p, i) => {
+            const inQueue = queue.includes(p.id);
+            const busy = reservedIds.has(p.id);
+            const editing = editingId === p.id;
+            return (
+              <div key={p.id} className="bq-roster-row">
+                <span className="bq-roster-num">{i + 1}</span>
+                <Avatar name={p.name} />
+                {editing ? (
+                  <>
+                    <input className="bq-input bq-input-inline" value={editDraft.name} onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))} />
+                    <select className="bq-select" value={editDraft.level} onChange={(e) => setEditDraft((d) => ({ ...d, level: e.target.value }))}>{LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}</select>
+                    <select className="bq-select" value={editDraft.gender} onChange={(e) => setEditDraft((d) => ({ ...d, gender: e.target.value }))}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+                    <button className="bq-icon-btn" onClick={saveEdit}><Check size={16} /></button>
+                    <button className="bq-icon-btn" onClick={() => setEditingId(null)}><X size={16} /></button>
+                  </>
+                ) : (
+                  <>
+                    <div className="bq-roster-name-col">
+                      <div className="bq-roster-name">{p.name} <GenderDot gender={p.gender} /></div>
+                      <LevelBadge level={p.level} />
+                    </div>
+                    <div className="bq-roster-count" title="Matches played today"><Trophy size={13} /> <span className="bq-mono">{p.matchesToday}</span></div>
+                    <div className="bq-roster-actions">
+                      {!busy && <button className="bq-icon-btn" title={inQueue ? "Already in pool" : "Add to pool"} disabled={inQueue} onClick={() => addToQueue(p.id)}><UserPlus size={15} /></button>}
+                      <button className="bq-icon-btn" title="Edit" onClick={() => startEdit(p)}><Pencil size={15} /></button>
+                      <button className="bq-icon-btn bq-icon-danger" title="Delete" onClick={() => deletePlayer(p.id)}><Trash2 size={15} /></button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  History tab                                                            */
+/* ---------------------------------------------------------------------- */
+function HistoryTab({ history, deleteHistoryEntry, clearHistory, setHistoryScore, toggleShuttleUsed }) {
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const t = setTimeout(() => setConfirmClear(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirmClear]);
+
+  const handleClearClick = () => {
+    if (!confirmClear) { setConfirmClear(true); return; }
+    clearHistory();
+    setConfirmClear(false);
+  };
+
+  const newShuttleCount = history.filter((h) => h.shuttleUsed).length;
+
+  return (
+    <div className="bq-history">
+      <div className="bq-section-head">
+        <div>
+          <h2 style={{ marginBottom: 2 }}>Match history</h2>
+          {history.length > 0 && (
+            <p className="bq-muted-sm" style={{ margin: 0 }}>
+              🏸 {newShuttleCount} new shuttlecock{newShuttleCount !== 1 ? "s" : ""} this session
+            </p>
+          )}
+        </div>
+        <div className="bq-row-gap" style={{ alignItems: "center" }}>
+          {history.length > 0 && <InfoTip text="Deleting a single match also undoes its game & shuttle count. Enter final scores here to populate the Ranking tab." />}
+          {history.length > 0 && (
+            <button className={`bq-btn ${confirmClear ? "bq-btn-danger" : "bq-btn-ghost"}`} onClick={handleClearClick}>
+              <Trash2 size={14} /> {confirmClear ? "Click again to confirm" : "Clear History"}
+            </button>
+          )}
+        </div>
+      </div>
+      {history.length === 0 && <p className="bq-empty">No completed matches yet.</p>}
+      <div className="bq-history-list">
+        {history.map((h) => (
+          <div key={h.id} className="bq-history-card">
+            <div className="bq-history-row1">
+              <span className="bq-history-time">{new Date(h.time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>
+              <span className="bq-history-court">{h.court}</span>
+              <CategoryChip category={h.category} />
+              <Tooltip text={h.shuttleUsed ? "New shuttlecock" : "Old shuttlecock"}>
+                <button type="button" className="bq-shuttle-toggle" onClick={() => toggleShuttleUsed(h.id)} aria-label="Toggle whether a new shuttlecock was used for this match">
+                  {h.shuttleUsed ? "👶🏻" : "👴🏻"}
+                </button>
+              </Tooltip>
+              <button className="bq-icon-btn bq-icon-danger bq-history-delete" title="Delete this match" onClick={() => deleteHistoryEntry(h.id)}><X size={14} /></button>
+            </div>
+            <div className="bq-history-row2">
+              <span className="bq-history-team-name">{h.teamA.join(" & ")}</span>
+              <input type="text" inputMode="numeric" placeholder="0" className="bq-score-input" value={h.scoreA || ""} onChange={(e) => setHistoryScore(h.id, "scoreA", e.target.value)} title="Team A final score" />
+            </div>
+            <div className="bq-history-row3">
+              <span className="bq-history-team-name">{h.teamB.join(" & ")}</span>
+              <input type="text" inputMode="numeric" placeholder="0" className="bq-score-input" value={h.scoreB || ""} onChange={(e) => setHistoryScore(h.id, "scoreB", e.target.value)} title="Team B final score" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Ranking tab                                                            */
+/* ---------------------------------------------------------------------- */
+function RankingTab({ players, history }) {
+  const colors = useThemeColors();
+  const [subTab, setSubTab] = useState("wins");
+  const [exportPreview, setExportPreview] = useState(null); // { canvas, fileName, title } | null
+  const ranked = computeRankings(history, players);
+
+  let sorted, ranks;
+  if (subTab === "wins") {
+    sorted = [...ranked].sort((a, b) => b.wins - a.wins || b.scoreDiff - a.scoreDiff);
+    ranks = computeDenseRanks(sorted, (a, b) => a.wins === b.wins && a.scoreDiff === b.scoreDiff);
+  } else if (subTab === "points") {
+    sorted = [...ranked].sort((a, b) => b.points - a.points || a.matches - b.matches);
+    ranks = computeDenseRanks(sorted, (a, b) => a.points === b.points && a.matches === b.matches);
+  } else {
+    const winPct = (r) => Math.round((r.wins / r.matches) * 100); // compare the same rounded % shown on screen
+    sorted = [...ranked].sort((a, b) => winPct(b) - winPct(a) || b.scoreDiff - a.scoreDiff);
+    ranks = computeDenseRanks(sorted, (a, b) => winPct(a) === winPct(b) && a.scoreDiff === b.scoreDiff);
+  }
+
+  const subTabs = [
+    { key: "wins", label: "By Wins" },
+    { key: "points", label: "By Points" },
+    { key: "winPercent", label: "By Win%" },
+  ];
+  const activeLabel = subTabs.find((t) => t.key === subTab).label;
+
+  return (
+    <div className="bq-ranking">
+      <div className="bq-chip-row" style={{ marginBottom: 14 }}>
+        {subTabs.map((t) => (
+          <button key={t.key} className={`bq-chip ${subTab === t.key ? "bq-chip-active" : ""}`} onClick={() => setSubTab(t.key)}>{t.label}</button>
+        ))}
+      </div>
+
+      <div className="bq-pay-table-wrap">
+        <div className="bq-pay-heading-row">
+          <h2>{activeLabel} <span className="bq-muted-sm">({sorted.length} ranked)</span></h2>
+          <button className="bq-btn bq-btn-ghost" onClick={async () => { const canvas = await renderExportCanvas(activeLabel, rankingColumns(subTab, ranks), sorted, colors); setExportPreview({ canvas, fileName: `${activeLabel.replace(/[^a-z0-9]/gi, "_")}.png`, title: activeLabel }); }} disabled={sorted.length === 0}>Share</button>
+        </div>
+        {sorted.length === 0 ? (
+          <p className="bq-empty">No scored matches yet. Enter final scores in the History tab to populate rankings — players only appear here once they have at least one scored match.</p>
+        ) : (
+          <div className="bq-pay-table-scroll">
+            <table className="bq-pay-table">
+              <thead>
+                {subTab === "wins" && <tr><th>#</th><th>Player</th><th>Wins</th><th>Score diff</th></tr>}
+                {subTab === "points" && <tr><th>#</th><th>Player</th><th>Points</th><th>Matches</th></tr>}
+                {subTab === "winPercent" && <tr><th>#</th><th>Player</th><th>Win%</th><th>Score diff</th></tr>}
+              </thead>
+              <tbody>
+                {sorted.map((p, i) => (
+                  <tr key={p.id}>
+                    <td className="bq-mono">{ranks[i]}</td>
+                    <td>{p.name}</td>
+                    {subTab === "wins" && <><td className="bq-mono">{p.wins}</td><td className="bq-mono">{p.scoreDiff >= 0 ? "+" : ""}{p.scoreDiff}</td></>}
+                    {subTab === "points" && <><td className="bq-mono">{p.points}</td><td className="bq-mono">{p.matches}</td></>}
+                    {subTab === "winPercent" && <><td className="bq-mono">{Math.round((p.wins / p.matches) * 100)}%</td><td className="bq-mono">{p.scoreDiff >= 0 ? "+" : ""}{p.scoreDiff}</td></>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {exportPreview && <ExportPreviewModal canvas={exportPreview.canvas} fileName={exportPreview.fileName} title={exportPreview.title} onClose={() => setExportPreview(null)} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Payment tab                                                            */
+/* ---------------------------------------------------------------------- */
+
+function PaymentTab({ players, shuttlePrice, setShuttlePrice, courtFeePerHour, setCourtFeePerHour, courtFeeMode, setCourtFeeMode, totalCourtFee, setTotalCourtFee, setPlayerMisc, togglePaid, colors }) {
+  const [expanded, setExpanded] = useState(false);
+  const [exportPreview, setExportPreview] = useState(null); // { canvas, fileName, title } | null
+  const perGameCourtFee = (parseFloat(courtFeePerHour) || 0) / 3 / 4;
+  const participantCount = players.filter((p) => p.matchesToday >= 1).length;
+  const perPlayerShare = participantCount > 0 ? (parseFloat(totalCourtFee) || 0) / participantCount : 0;
+  const rows = computeBillRows(players, shuttlePrice, courtFeePerHour, courtFeeMode, totalCourtFee);
+  const grand = rows.reduce((acc, r) => ({ court: acc.court + r.courtCost, shuttle: acc.shuttle + r.shuttleCost, misc: acc.misc + r.misc, total: acc.total + r.total }), { court: 0, shuttle: 0, misc: 0, total: 0 });
+  const columns = getBillsColumns(expanded);
+
+  return (
+    <div className="bq-payment">
+      <div className="bq-payment-settings">
+        <h2>Rates</h2>
+        <div className="bq-chip-row" style={{ marginBottom: 12 }}>
+          <button className={`bq-chip ${courtFeeMode === "perGame" ? "bq-chip-active" : ""}`} onClick={() => setCourtFeeMode("perGame")}>Pay per game</button>
+          <button className={`bq-chip ${courtFeeMode === "sharing" ? "bq-chip-active" : ""}`} onClick={() => setCourtFeeMode("sharing")}>Court sharing</button>
+        </div>
+        <div className="bq-pay-settings-grid">
+          <label className="bq-pay-field">
+            <span>Shuttlecock price <InfoTip text="Split 4 ways, charged to a player only for games where the court's &quot;New shuttlecock&quot; box was ticked." /></span>
+            <div className="bq-pay-input-wrap">
+              <span>₱</span>
+              <input type="text" inputMode="decimal" placeholder="0.00" className="bq-input" value={shuttlePrice} onChange={(e) => setShuttlePrice(e.target.value)} />
+            </div>
+          </label>
+          {courtFeeMode === "perGame" ? (
+            <label className="bq-pay-field">
+              <span>Court fee per hour <InfoTip text={`÷ 3 games/hour ÷ 4 players = ${fmt(perGameCourtFee)} per player per game, rounded up to the next peso in the table.`} /></span>
+              <div className="bq-pay-input-wrap">
+                <span>₱</span>
+                <input type="text" inputMode="decimal" placeholder="0.00" className="bq-input" value={courtFeePerHour} onChange={(e) => setCourtFeePerHour(e.target.value)} />
+              </div>
+            </label>
+          ) : (
+            <label className="bq-pay-field">
+              <span>Total court fee <InfoTip text={`Split evenly across everyone who played at least 1 game today (${participantCount} player${participantCount !== 1 ? "s" : ""} right now) = ${fmt(perPlayerShare)} each, rounded up to the next peso. Someone who played 4 games pays the same share as someone who played 1.`} /></span>
+              <div className="bq-pay-input-wrap">
+                <span>₱</span>
+                <MiscFormulaInput value={totalCourtFee} onCommit={setTotalCourtFee} title="You can type a formula like 60*2 and press Enter" />
+              </div>
+            </label>
+          )}
+        </div>
+      </div>
+
+      <div className="bq-pay-table-wrap">
+        <div className="bq-pay-heading-row">
+          <h2>
+            Bills <span className="bq-muted-sm">({rows.length} players)</span> <InfoTip text="Use the Misc column to add a one-off charge (+) or credit (−) for any individual player. Only players with a nonzero total are shown." />
+            <button className="bq-expand-btn" onClick={() => setExpanded((e) => !e)} title={expanded ? "Collapse: hide Court fee & Shuttle fee columns" : "Expand: show Court fee & Shuttle fee columns"}>{expanded ? "−" : "+"}</button>
+          </h2>
+          <button className="bq-btn bq-btn-ghost" onClick={async () => { const canvas = await renderExportCanvas("Bills", columns, rows, colors); setExportPreview({ canvas, fileName: "Bills.png", title: "Bills" }); }} disabled={rows.length === 0}>Share</button>
+        </div>
+        {rows.length === 0 ? (
+          <p className="bq-empty">No players with a bill yet.</p>
+        ) : (
+          <div className="bq-pay-table-scroll">
+          <table className="bq-pay-table">
+            <thead>
+              <tr>
+                <th>Player</th><th>Games</th><th>Misc (+/−)</th>
+                {expanded && <><th>Court fee</th><th>Shuttle fee</th></>}
+                <th>Total</th><th>Paid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.name}</td>
+                  <td className="bq-mono">{r.games}</td>
+                  <td>
+                    <MiscFormulaInput
+                      value={r.rawMiscAdjustment || ""}
+                      onCommit={(v) => setPlayerMisc(r.id, v)}
+                      title="Add a charge (+) or credit (−). Simple formulas like 50+30 also work — press Enter or click away to calculate."
+                    />
+                  </td>
+                  {expanded && <><td className="bq-mono">{fmt(r.courtCost)}</td><td className="bq-mono">{fmt(r.shuttleCost)}</td></>}
+                  <td className="bq-mono bq-pay-total-cell">{fmt(r.total)}</td>
+                  <td>
+                    <label className="bq-paid-check">
+                      <input type="checkbox" checked={r.paid} onChange={() => togglePaid(r.id)} />
+                    </label>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={2}>Grand total</td>
+                <td className="bq-mono">{fmt(grand.misc)}</td>
+                {expanded && <><td className="bq-mono">{fmt(grand.court)}</td><td className="bq-mono">{fmt(grand.shuttle)}</td></>}
+                <td className="bq-mono bq-pay-total-cell">{fmt(grand.total)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+          </div>
+        )}
+      </div>
+      {exportPreview && <ExportPreviewModal canvas={exportPreview.canvas} fileName={exportPreview.fileName} title={exportPreview.title} onClose={() => setExportPreview(null)} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Settings tab                                                           */
+/* ---------------------------------------------------------------------- */
+function SettingsTab({ geminiKeys, setGeminiKeys, geminiKeyIndex, setGeminiKeyIndex, theme, setTheme, fontChoice, setFontChoice, fontSizeChoice, setFontSizeChoice }) {
+  const setKeyAt = (i, value) => setGeminiKeys((prev) => { const next = [...prev]; next[i] = value; return next; });
+
+  return (
+    <div className="bq-settings-layout">
+      <div className="bq-settings-card">
+        <h2><Key size={15} /> Gemini API keys <InfoTip text={'Map up to 3 of your own free Gemini keys to "Gemini AI 1/2/3", then pick which one is active below — switch to another if one hits its rate limit. Get a free key at aistudio.google.com. Keys are stored only in this browser\'s local storage on this device.'} /></h2>
+        <label className="bq-settings-field">
+          <span>Active key</span>
+          <select className="bq-select" style={{ width: "100%" }} value={geminiKeyIndex} onChange={(e) => setGeminiKeyIndex(Number(e.target.value))}>
+            {[0, 1, 2].map((i) => (
+              <option key={i} value={i}>Gemini AI {i + 1}{(geminiKeys[i] || "").trim() ? "" : " (not set)"}</option>
+            ))}
+          </select>
+        </label>
+        {[0, 1, 2].map((i) => (
+          <label key={i} className="bq-settings-field">
+            <span>Gemini AI {i + 1}</span>
+            <input
+              type="password" className="bq-input" placeholder="Paste API key here"
+              value={geminiKeys[i] || ""} onChange={(e) => setKeyAt(i, e.target.value)}
+            />
+          </label>
+        ))}
+      </div>
+
+      <div className="bq-settings-card">
+        <h2><Palette size={15} /> Theme</h2>
+        <div className="bq-theme-grid">
+          {Object.keys(THEMES).map((key) => (
+            <button
+              key={key}
+              className={`bq-theme-swatch ${theme === key ? "bq-theme-swatch-active" : ""}`}
+              onClick={() => setTheme(key)}
+              style={{ background: THEMES[key].cream, borderColor: THEMES[key].court }}
+            >
+              <span className="bq-theme-swatch-bar" style={{ background: THEMES[key].court }} />
+              <span className="bq-theme-swatch-bar" style={{ background: THEMES[key].shuttle }} />
+              <span className="bq-theme-swatch-label" style={{ color: THEMES[key].ink }}>{THEME_LABELS[key]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bq-settings-card">
+        <h2><Type size={15} /> Text</h2>
+        <label className="bq-settings-field">
+          <span>Font</span>
+          <select className="bq-select" value={fontChoice} onChange={(e) => setFontChoice(e.target.value)}>
+            {Object.keys(FONT_OPTIONS).map((key) => <option key={key} value={key}>{FONT_OPTIONS[key].label}</option>)}
+          </select>
+        </label>
+        <label className="bq-settings-field">
+          <span>Font size</span>
+          <select className="bq-select" value={fontSizeChoice} onChange={(e) => setFontSizeChoice(e.target.value)}>
+            {Object.keys(FONT_SIZES).map((key) => <option key={key} value={key}>{FONT_SIZE_LABELS[key]}</option>)}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Global styles                                                          */
+/* ---------------------------------------------------------------------- */
+function Styles({ fontFamily }) {
+  const COLORS = useThemeColors();
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+      .bq-root { font-family: ${fontFamily}; color: ${COLORS.ink}; background: ${COLORS.cream}; min-height: 100vh; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+      .bq-loading { align-items: center; justify-content: center; flex-direction: row; gap: 10px; padding: 60px 0; color: ${COLORS.muted}; }
+      .bq-spin { animation: bq-spin 0.9s linear infinite; }
+      @keyframes bq-spin { to { transform: rotate(360deg); } }
+
+      .bq-header { background: linear-gradient(90deg, #000000 0%, #000000 33%, ${COLORS.headerBg} 100%); color: ${COLORS.headerText}; padding: 16px 22px; position: relative; }
+      .bq-back-circle { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,0.14); color: ${COLORS.headerText}; text-decoration: none; flex-shrink: 0; margin-left: auto; }
+      .bq-back-circle:hover { background: rgba(255,255,255,0.24); }
+      .bq-brand-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+      .bq-brand-logo { height: 72px; width: auto; flex-shrink: 0; }
+      .bq-brand-text h1 { font-family: 'Oswald', sans-serif; font-size: 18px; letter-spacing: 0.02em; margin: 0; text-transform: uppercase; }
+      .bq-header-date { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: rgba(246,243,234,0.75); letter-spacing: 0.02em; display: block; margin-top: 2px; }
+      .bq-header-line { height: 3px; margin-top: 14px; background: repeating-linear-gradient(90deg, ${COLORS.shuttle} 0 18px, transparent 18px 26px); opacity: 0.85; }
+
+      .bq-tabbar { display: flex; gap: 4px; background: ${COLORS.card}; padding: 8px 14px 0; border-bottom: 1px solid #E7E2D3; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .bq-tab { flex-shrink: 0; }
+      .bq-tab { display: flex; align-items: center; gap: 6px; padding: 9px 14px; border: none; background: transparent; font-family: ${fontFamily}; font-weight: 700; font-size: 13px; color: ${COLORS.muted}; cursor: pointer; border-radius: 8px 8px 0 0; }
+      .bq-tab-active { color: ${COLORS.accent}; background: ${COLORS.cream}; }
+      .bq-tab-count { background: ${COLORS.shuttle}; color: ${COLORS.courtDark}; font-family: 'IBM Plex Mono'; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 20px; }
+      .bq-tab-icon-only { margin-left: auto; padding: 9px 12px; }
+
+      .bq-main { flex: 1; background: ${COLORS.cream}; padding: 18px; }
+
+      .bq-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 8px; font-weight: 700; font-size: 12.5px; font-family: ${fontFamily}; cursor: pointer; border: 1px solid transparent; transition: filter .12s; }
+      .bq-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      .bq-btn:not(:disabled):hover { filter: brightness(0.96); }
+      .bq-btn-primary { background: ${COLORS.accent}; color: ${COLORS.cream}; }
+      .bq-btn-ghost { background: ${COLORS.card}; color: ${COLORS.accent}; border-color: #DDD6C2; }
+      .bq-row-gap { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .bq-icon-btn { border: none; background: transparent; color: ${COLORS.muted}; cursor: pointer; padding: 5px; border-radius: 6px; display: inline-flex; }
+      .bq-icon-btn:hover { background: #EEE9DA; color: ${COLORS.ink}; }
+      .bq-icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+      .bq-icon-danger:hover { background: #FBE4E2; color: ${COLORS.danger}; }
+
+      .bq-badge { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.02em; white-space: nowrap; }
+      .bq-gender-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 4px; }
+      .bq-avatar { border-radius: 50%; background: ${COLORS.court}; color: ${COLORS.shuttle}; display: flex; align-items: center; justify-content: center; font-family: 'Oswald'; font-weight: 600; flex-shrink: 0; }
+      .bq-mono { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: ${COLORS.muted}; }
+      .bq-muted-sm { color: ${COLORS.muted}; font-size: 12.5px; }
+      .bq-empty { color: ${COLORS.muted}; font-size: 13px; padding: 14px 0; }
+      .bq-streak-badge { font-family: 'IBM Plex Mono'; font-size: 11px; color: #A9631C; background: #FBEEDD; padding: 1px 7px; border-radius: 20px; }
+
+      .bq-court-lines { position: absolute; inset: 0; width: 100%; height: 100%; color: ${COLORS.court}; pointer-events: none; }
+
+      .bq-courts-layout { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start; }
+      @media (max-width: 880px) { .bq-courts-layout { grid-template-columns: 1fr; } }
+      .bq-courts-col { min-width: 0; }
+      .bq-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+      .bq-section-head h2 { font-family: 'Oswald'; font-size: 16px; text-transform: uppercase; letter-spacing: 0.03em; color: ${COLORS.accent}; margin: 0; }
+
+      .bq-generate-bar { background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+      .bq-tooltip-wrap { position: relative; display: inline-flex; }
+      .bq-tooltip-bubble { position: absolute; bottom: calc(100% + 8px); left: 0; background: ${COLORS.courtDark}; color: ${COLORS.cream}; font-size: 12px; font-weight: 600; padding: 6px 10px; border-radius: 6px; white-space: nowrap; z-index: 40; pointer-events: none; }
+      .bq-tooltip-bubble::after { content: ""; position: absolute; top: 100%; left: 14px; border: 5px solid transparent; border-top-color: ${COLORS.courtDark}; }
+      .bq-infotip-wrap { position: relative; display: inline-flex; }
+      .bq-infotip-btn { background: none; border: none; color: ${COLORS.muted}; cursor: pointer; padding: 2px; display: inline-flex; border-radius: 50%; }
+      .bq-infotip-btn:hover { color: ${COLORS.accent}; background: ${COLORS.cream}; }
+      .bq-infotip-bubble { position: absolute; top: calc(100% + 6px); left: 0; background: ${COLORS.courtDark}; color: ${COLORS.cream}; font-size: 11.5px; font-weight: 500; line-height: 1.4; padding: 9px 11px; border-radius: 8px; width: 220px; white-space: normal; z-index: 45; box-shadow: 0 8px 20px rgba(0,0,0,0.2); }
+      .bq-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+      .bq-chip { font-size: 11.5px; font-weight: 700; padding: 5px 10px; border-radius: 20px; border: 1px solid #DDD6C2; background: ${COLORS.cream}; color: ${COLORS.muted}; cursor: pointer; }
+      .bq-chip-active { background: ${COLORS.accent}; color: ${COLORS.cream}; border-color: ${COLORS.accent}; }
+
+      .bq-pending-section { margin-bottom: 6px; }
+      .bq-pending-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; }
+      .bq-pending-card { position: relative; min-width: 240px; width: max-content; flex-shrink: 0; background: ${COLORS.card}; border: 1.5px dashed ${COLORS.accent}55; border-radius: 14px; padding: 12px; cursor: pointer; transition: box-shadow .12s, border-color .12s; }
+      .bq-pending-card:hover { box-shadow: 0 6px 16px rgba(18,51,40,0.12); border-color: ${COLORS.accent}; }
+      .bq-pending-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 6px; }
+      .bq-pending-title { font-family: 'Oswald'; font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; color: ${COLORS.accent}; text-transform: uppercase; }
+      .bq-pending-source { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: ${COLORS.muted}; flex: 1; }
+      .bq-pending-send { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+      .bq-court-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 5px 9px; border-radius: 20px; border: 1px solid ${COLORS.accent}; background: ${COLORS.accent}; color: ${COLORS.cream}; cursor: pointer; }
+      .bq-court-pill:hover { filter: brightness(1.15); }
+
+      .bq-pending-card-editing { cursor: default; border-style: solid; }
+      .bq-pending-footer { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #E7E2D3; }
+      .bq-edit-players-btn { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; background: none; border: none; color: ${COLORS.muted}; font-size: 11px; font-weight: 700; cursor: pointer; padding: 4px 2px; }
+      .bq-edit-players-btn:hover { color: ${COLORS.accent}; }
+      .bq-pending-footer .bq-pending-send { margin-top: 0; }
+      .bq-team-player-edit-wrap { position: relative; }
+      .bq-team-player-edit { width: 100%; background: none; border: 1px dashed ${COLORS.accent}55; border-radius: 8px; padding: 4px 6px; cursor: pointer; text-align: left; }
+      .bq-team-player-edit:hover { background: ${COLORS.cream}; }
+      .bq-team-edit-icon { margin-left: auto; color: ${COLORS.muted}; flex-shrink: 0; }
+      .bq-swap-picker { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 10px; width: 220px; max-height: 260px; display: flex; flex-direction: column; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+      .bq-swap-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid #E7E2D3; font-size: 11.5px; font-weight: 700; color: ${COLORS.accent}; }
+      .bq-swap-picker-list { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 8px; }
+      .bq-swap-section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: ${COLORS.muted}; padding: 2px 4px; }
+      .bq-swap-candidate { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: none; padding: 5px 4px; border-radius: 6px; cursor: pointer; text-align: left; }
+      .bq-swap-candidate:hover { background: ${COLORS.cream}; }
+      .bq-swap-candidate-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; align-items: flex-start; }
+      .bq-swap-candidate-name { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .bq-court-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+      .bq-court-card { position: relative; background: ${COLORS.card}; border-radius: 14px; padding: 14px; border: 1px solid #E7E2D3; overflow: hidden; min-height: 190px; display: flex; flex-direction: column; }
+      .bq-court-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; z-index: 1; }
+      .bq-court-label { font-family: 'Oswald'; font-weight: 600; font-size: 14px; letter-spacing: 0.03em; color: ${COLORS.accent}; text-transform: uppercase; }
+      .bq-court-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; z-index: 1; text-align: center; padding: 0 8px; }
+      .bq-court-empty p { margin: 0; color: ${COLORS.muted}; font-size: 12.5px; }
+      .bq-checkbox-row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 600; color: ${COLORS.muted}; margin-bottom: 10px; cursor: pointer; padding: 5px 8px; border-radius: 8px; background: ${COLORS.cream}; width: fit-content; }
+      .bq-checkbox-row input { accent-color: ${COLORS.accent}; width: 14px; height: 14px; cursor: pointer; }
+      .bq-checkbox-row-active { background: #FBEEDD; color: #A9631C; }
+      .bq-paid-check input { accent-color: ${COLORS.accent}; width: 16px; height: 16px; cursor: pointer; }
+      .bq-pay-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #E7E2D3; flex-wrap: wrap; }
+      .bq-link-btn { background: none; border: none; color: ${COLORS.accent}; font-size: 12.5px; font-weight: 700; text-decoration: underline; cursor: pointer; padding: 4px 0; }
+      .bq-expand-btn { width: 20px; height: 20px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; background: ${COLORS.card}; border: 1px solid ${COLORS.accent}; border-radius: 4px; color: ${COLORS.accent}; font-size: 13px; font-weight: 700; line-height: 1; cursor: pointer; text-transform: none; }
+      .bq-expand-btn:hover { background: ${COLORS.accent}; color: ${COLORS.cream}; }
+
+      .bq-match { z-index: 1; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+      .bq-category-chip { display: inline-block; align-self: flex-start; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 20px; border: 1px solid; text-transform: uppercase; letter-spacing: 0.02em; }
+      .bq-teams { display: flex; align-items: center; gap: 8px; }
+      .bq-team { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+      .bq-team-player { display: flex; align-items: center; gap: 8px; }
+      .bq-team-name { font-size: 12.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bq-vs { font-family: 'Oswald'; font-size: 12px; color: ${COLORS.muted}; font-weight: 600; }
+      .bq-vs-sm { font-size: 11px; color: ${COLORS.muted}; }
+      .bq-match-actions { display: flex; gap: 8px; margin-top: auto; }
+      .bq-match-actions .bq-btn { flex: 1; justify-content: center; }
+      .bq-warn-inline { display: inline-flex; align-items: center; gap: 4px; color: #A9631C; font-size: 11px; font-weight: 700; margin-bottom: 6px; }
+
+      .bq-queue-col { background: ${COLORS.card}; border-radius: 14px; padding: 14px; border: 1px solid #E7E2D3; }
+      .bq-add-panel { max-height: 180px; overflow-y: auto; border: 1px dashed #DDD6C2; border-radius: 10px; padding: 6px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 2px; }
+      .bq-add-row { display: flex; align-items: center; gap: 8px; padding: 6px; border: none; background: transparent; border-radius: 8px; cursor: pointer; text-align: left; }
+      .bq-add-row:hover { background: ${COLORS.cream}; }
+      .bq-add-name { flex: 1; font-size: 12.5px; font-weight: 600; }
+      .bq-queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 560px; overflow-y: auto; }
+      .bq-queue-item { display: flex; align-items: center; gap: 8px; padding: 7px; background: ${COLORS.cream}; border-radius: 10px; }
+      .bq-queue-pos { font-family: 'IBM Plex Mono'; font-size: 11px; color: ${COLORS.muted}; width: 16px; text-align: center; }
+      .bq-queue-info { flex: 1; min-width: 0; }
+      .bq-queue-name { font-size: 12.5px; font-weight: 700; display: flex; align-items: center; }
+      .bq-queue-meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; flex-wrap: wrap; }
+      .bq-queue-actions { display: flex; }
+      .bq-queue-actions button { border: none; background: transparent; color: ${COLORS.muted}; cursor: pointer; padding: 3px; display: flex; }
+      .bq-queue-actions button:hover { color: ${COLORS.ink}; }
+
+      .bq-players-layout { display: grid; grid-template-columns: 260px 1fr; gap: 20px; align-items: start; }
+      @media (max-width: 780px) { .bq-players-layout { grid-template-columns: 1fr; } }
+      .bq-add-form { background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 10px; position: sticky; top: 0; }
+      .bq-add-form h2 { font-family: 'Oswald'; font-size: 15px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0 0 2px; }
+      .bq-form-row { display: flex; gap: 8px; }
+      .bq-input, .bq-select { font-family: ${fontFamily}; font-size: 13px; padding: 8px 10px; border: 1px solid #DDD6C2; border-radius: 8px; background: ${COLORS.cream}; color: ${COLORS.ink}; }
+      /* Mobile browsers (iOS Safari especially) auto-zoom the page when a focused input's
+         font-size is under 16px. This override only applies below the phone breakpoint, so
+         desktop/tablet keep their normal compact sizing. */
+      @media (max-width: 600px) {
+        .bq-root input, .bq-root select, .bq-root textarea { font-size: 16px !important; }
+      }
+      .bq-input:focus, .bq-select:focus { outline: 2px solid ${COLORS.accent}; outline-offset: 1px; }
+      .bq-input-inline { flex: 1; min-width: 0; }
+      .bq-roster h2 { font-family: 'Oswald'; font-size: 16px; text-transform: uppercase; color: ${COLORS.accent}; margin-bottom: 10px; }
+      .bq-roster-list { display: flex; flex-direction: column; gap: 8px; }
+      .bq-roster-row { display: flex; align-items: center; gap: 10px; background: ${COLORS.card}; border: 1px solid #E7E2D3; padding: 9px 12px; border-radius: 12px; flex-wrap: wrap; }
+      .bq-roster-num { font-family: 'IBM Plex Mono'; font-size: 11px; color: ${COLORS.muted}; width: 18px; text-align: center; flex-shrink: 0; }
+      .bq-roster-name-col { flex: 1; min-width: 120px; }
+      .bq-roster-name { font-weight: 700; font-size: 13px; display: flex; align-items: center; }
+      .bq-roster-count { display: flex; align-items: center; gap: 4px; color: ${COLORS.muted}; }
+      .bq-roster-actions { display: flex; gap: 2px; }
+
+      .bq-modal-overlay { position: fixed; inset: 0; background: rgba(10,32,24,0.55); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+      .bq-modal { background: ${COLORS.cream}; border-radius: 16px; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+      .bq-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 10px; }
+      .bq-modal-head h3 { font-family: 'Oswald'; font-size: 16px; display: flex; align-items: center; gap: 8px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0; }
+      .bq-modal-body { padding: 14px 18px 18px; }
+      .bq-export-modal { position: relative; padding-bottom: 56px; }
+      .bq-export-scroll { max-height: 60vh; overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; }
+      .bq-export-scroll::-webkit-scrollbar { display: none; }
+      .bq-export-share-btn { position: absolute; bottom: 14px; right: 18px; box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
+      .bq-suggestion { background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 12px; padding: 14px; margin-top: 10px; }
+      .bq-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+      .bq-manual-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin-top: 10px; max-height: 240px; overflow-y: auto; }
+      .bq-manual-pick { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid #DDD6C2; background: ${COLORS.card}; border-radius: 9px; cursor: pointer; font-size: 12px; font-weight: 600; text-align: left; }
+      .bq-manual-pick-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; align-items: flex-start; }
+      .bq-manual-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bq-manual-pick-active { border-color: ${COLORS.accent}; background: #E9F0EA; }
+
+      .bq-history h2 { font-family: 'Oswald'; font-size: 16px; text-transform: uppercase; color: ${COLORS.accent}; margin-bottom: 10px; }
+      .bq-history-list { display: flex; flex-direction: column; gap: 8px; }
+      .bq-history-card { display: flex; flex-direction: column; gap: 6px; background: ${COLORS.card}; border: 1px solid #E7E2D3; padding: 10px 12px; border-radius: 12px; font-size: 12.5px; }
+      .bq-history-row1 { display: flex; align-items: center; gap: 10px; }
+      .bq-history-row2, .bq-history-row3 { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; }
+      .bq-history-time { font-family: 'IBM Plex Mono'; color: ${COLORS.muted}; flex-shrink: 0; }
+      .bq-history-court { font-weight: 700; flex-shrink: 0; }
+      .bq-history-team-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bq-history-delete { margin-left: auto; }
+      .bq-shuttle-toggle { background: none; border: none; padding: 0; margin: 0; font-size: 15px; line-height: 1; cursor: pointer; }
+      .bq-score-input { width: 40px; text-align: center; font-family: 'IBM Plex Mono'; font-size: 12.5px; font-weight: 700; padding: 4px 2px; border: 1px solid #DDD6C2; border-radius: 6px; background: ${COLORS.cream}; color: ${COLORS.ink}; }
+      .bq-score-input:focus { outline: 2px solid ${COLORS.accent}; outline-offset: 1px; }
+
+      .bq-payment { display: grid; grid-template-columns: 280px 1fr; gap: 20px; align-items: start; }
+      @media (max-width: 820px) { .bq-payment { grid-template-columns: 1fr; } }
+      .bq-payment-settings, .bq-pay-table-wrap { background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 14px; padding: 16px; min-width: 0; }
+      .bq-payment-settings h2, .bq-pay-table-wrap h2 { font-family: 'Oswald'; font-size: 15px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0 0 12px; }
+      .bq-pay-heading-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+      .bq-pay-heading-row h2 { margin-bottom: 0; }
+      .bq-pay-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .bq-pay-table { min-width: 480px; }
+      .bq-pay-settings-grid { display: flex; flex-direction: column; gap: 14px; }
+      .bq-pay-field { display: flex; flex-direction: column; gap: 5px; }
+      .bq-pay-field > span { font-size: 12px; font-weight: 700; color: ${COLORS.ink}; }
+      .bq-pay-field small { line-height: 1.4; }
+      .bq-pay-input-wrap { display: flex; align-items: center; gap: 6px; }
+      .bq-pay-input-wrap input { flex: 1; min-width: 0; }
+      .bq-pay-input-wrap > span { font-weight: 700; color: ${COLORS.muted}; }
+      .bq-pay-input-wrap .bq-input { flex: 1; }
+      .bq-payment-settings > p { margin-top: 14px; padding-top: 12px; border-top: 1px solid #E7E2D3; }
+
+      .bq-pay-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .bq-pay-table th { text-align: left; font-family: 'Oswald'; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.03em; color: ${COLORS.muted}; padding: 6px 8px; border-bottom: 2px solid #E7E2D3; }
+      .bq-pay-table td { padding: 8px; border-bottom: 1px solid #EFEBDE; }
+      .bq-pay-table tr.bq-pay-row-idle { opacity: 0.5; }
+      .bq-pay-total-cell { font-weight: 700; color: ${COLORS.accent}; }
+      .bq-pay-table tfoot td { font-weight: 700; border-top: 2px solid #E7E2D3; border-bottom: none; padding-top: 10px; }
+      .bq-pay-misc-input { width: 80px; font-family: 'IBM Plex Mono'; font-size: 12px; padding: 5px 22px 5px 7px; border: 1px solid #DDD6C2; border-radius: 6px; background: ${COLORS.cream}; color: ${COLORS.ink}; transition: width 0.15s ease; }
+      .bq-pay-misc-input:focus { width: 180px; outline: 2px solid ${COLORS.accent}; outline-offset: 1px; }
+      .bq-formula-wrap { position: relative; display: inline-flex; align-items: center; }
+      .bq-calc-trigger { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); background: none; border: none; padding: 2px; cursor: pointer; display: flex; color: ${COLORS.muted}; }
+      .bq-calc-trigger:hover { color: ${COLORS.accent}; }
+      .bq-calc-overlay { position: fixed; inset: 0; background: rgba(10,32,24,0.5); display: flex; align-items: center; justify-content: center; z-index: 70; padding: 16px; }
+      .bq-calc { background: ${COLORS.cream}; border-radius: 16px; padding: 14px; width: 100%; max-width: 260px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+      .bq-calc-display { font-family: 'IBM Plex Mono', monospace; font-size: 22px; text-align: right; padding: 12px 10px; background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 10px; margin-bottom: 10px; min-height: 22px; overflow-x: auto; white-space: nowrap; color: ${COLORS.ink}; }
+      .bq-calc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+      .bq-calc-key { font-family: ${fontFamily}; font-size: 16px; font-weight: 700; padding: 12px 0; border-radius: 10px; border: 1px solid #DDD6C2; background: ${COLORS.card}; color: ${COLORS.ink}; cursor: pointer; }
+      .bq-calc-key:active { background: ${COLORS.cream}; }
+      .bq-calc-key-op { color: ${COLORS.accent}; }
+      .bq-calc-key-wide { grid-column: span 2; }
+      .bq-calc-key-equals { background: ${COLORS.accent}; color: ${COLORS.headerText}; border-color: ${COLORS.accent}; }
+
+      .bq-btn-danger { background: ${COLORS.danger}; color: ${COLORS.cream}; }
+
+      .bq-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px 16px; opacity: 0.75; }
+      .bq-footer-reset-btn { background: none; border: none; color: ${COLORS.muted}; font-size: 11.5px; font-family: ${fontFamily}; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; padding: 4px; }
+      .bq-footer-reset-btn:hover { color: ${COLORS.danger}; }
+      .bq-reset-list { margin: 8px 0; padding-left: 18px; font-size: 12.5px; color: ${COLORS.ink}; display: flex; flex-direction: column; gap: 4px; }
+
+      .bq-settings-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: start; }
+      .bq-settings-card { background: ${COLORS.card}; border: 1px solid #E7E2D3; border-radius: 14px; padding: 16px; }
+      .bq-settings-card h2 { font-family: 'Oswald'; font-size: 15px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0 0 8px; display: flex; align-items: center; gap: 7px; }
+      .bq-settings-card > p { margin-bottom: 12px; }
+      .bq-settings-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+      .bq-settings-field:last-child { margin-bottom: 0; }
+      .bq-settings-field > span { font-size: 12px; font-weight: 700; color: ${COLORS.ink}; }
+      .bq-theme-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .bq-theme-swatch { border: 2px solid transparent; border-radius: 12px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+      .bq-theme-swatch-active { outline: 2px solid ${COLORS.accent}; outline-offset: 2px; }
+      .bq-theme-swatch-bar { display: block; height: 8px; border-radius: 4px; }
+      .bq-theme-swatch-label { font-size: 11.5px; font-weight: 700; text-align: left; }
+
+      .bq-toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: ${COLORS.courtDark}; color: ${COLORS.cream}; padding: 10px 18px; border-radius: 10px; font-size: 12.5px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 60; }
+      .bq-toast-warn { background: #7A4B1E; }
+      .bq-toast-success { background: ${COLORS.accent}; }
+
+      *:focus-visible { outline: 2px solid ${COLORS.accent}; outline-offset: 2px; }
+    `}</style>
+  );
+}
+
+
+/* ---------------------------------------------------------------------- */
+/*  Mount                                                                   */
+/* ---------------------------------------------------------------------- */
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>

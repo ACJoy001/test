@@ -1,0 +1,1566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Undercover — Tournament</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #F6F3EA; min-height: 100vh; }
+  #root { min-height: 100vh; }
+  #boot-fallback { font-family: sans-serif; color: #647167; padding: 40px; text-align: center; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot-fallback">Loading Undercover…</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+/* ---------------------------------------------------------------------- */
+/*  Icon shims                                                             */
+/* ---------------------------------------------------------------------- */
+function makeIcon(symbol, extraStyle) {
+  return function Icon({ size = 16, style, ...rest }) {
+    return React.createElement("span", {
+      style: { fontSize: size, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", width: size, height: size, ...extraStyle, ...style },
+    }, symbol);
+  };
+}
+const X = makeIcon("✕");
+const Trash2 = makeIcon("🗑");
+const CircleDot = makeIcon("🏸");
+const ChevronLeft = makeIcon("‹");
+const UserPlus = makeIcon("➕");
+const Shuffle = makeIcon("🔀");
+const Trophy = makeIcon("🏆");
+
+// Shows an exported PNG as a real <img> so iOS's native press-and-hold menu (Save to Photos /
+// Copy / Share…) is available — that menu is a WebKit-level feature that works identically in
+// Safari and Chrome, unlike navigator.share() which is each browser's own (and on Chrome iOS,
+// unreliable) bridge to that same menu. The one-tap Share button below is kept as a bonus
+// shortcut, not the only path.
+function ExportPreviewModal({ canvas, fileName, title, onClose }) {
+  const dataUrl = canvas.toDataURL("image/png");
+  const shareNow = async () => {
+    try {
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      const file = new File([blob], fileName, { type: "image/png" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title });
+      }
+    } catch (err) { /* cancelled or unsupported — the image above still works either way */ }
+  };
+  return (
+    <div className="cp-modal-overlay" onClick={onClose}>
+      <div className="cp-modal cp-export-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+        <div className="cp-modal-head"><h3>{title}</h3><button className="cp-icon-btn" onClick={onClose}><X size={18} /></button></div>
+        <div className="cp-modal-body cp-export-scroll">
+          <p className="cp-muted-sm">Press and hold the image below to Save, Copy, or Share it — works the same in Safari and Chrome.</p>
+          <img src={dataUrl} alt={title} style={{ width: "100%", borderRadius: 10, border: "1px solid #DDD6C2", display: "block" }} />
+        </div>
+        <button className="cp-btn cp-btn-primary cp-export-share-btn" onClick={shareNow}>Share…</button>
+      </div>
+    </div>
+  );
+}
+const Settings = makeIcon("⚙");
+const Key = makeIcon("🔑");
+const Palette = makeIcon("🎨");
+const Type = makeIcon("🔤");
+
+/* ---------------------------------------------------------------------- */
+/*  Theme tokens — identical to index.html / shuttle-queue-personal.html   */
+/* ---------------------------------------------------------------------- */
+const THEMES = {
+  green: { court: "#123328", courtDark: "#0A2018", cream: "#F6F3EA", card: "#FFFFFF", ink: "#122019", muted: "#647167", shuttle: "#DCEF6B", accent: "#123328", headerText: "#F6F3EA", headerBg: "#123328", headerBgDark: "#0A2018" },
+  yellow: { court: "#8A5C0F", courtDark: "#5C3C08", cream: "#FBF0CB", card: "#FFFBEA", ink: "#4A3D12", muted: "#8A7440", shuttle: "#FFD23F", accent: "#8A5C0F", headerText: "#4A3D12", headerBg: "#EFC94C", headerBgDark: "#D9AE2E" },
+  dark: { court: "#131316", courtDark: "#0D0D0F", cream: "#19191B", card: "#1F2023", ink: "#E7E5E2", muted: "#9C9994", shuttle: "#4C8EFF", accent: "#4C8EFF", headerText: "#E7E5E2", headerBg: "#131316", headerBgDark: "#0D0D0F" },
+  light: { court: "#2B3A45", courtDark: "#1B262E", cream: "#F7F7F5", card: "#FFFFFF", ink: "#1E2328", muted: "#6B7278", shuttle: "#5AA9E6", accent: "#2B3A45", headerText: "#F7F7F5", headerBg: "#2B3A45", headerBgDark: "#1B262E" },
+};
+const FONT_OPTIONS = {
+  manrope: { label: "Manrope (default)", stack: "'Manrope', sans-serif" },
+  system: { label: "System sans-serif", stack: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" },
+  serif: { label: "Serif (Georgia)", stack: "Georgia, 'Times New Roman', serif" },
+  mono: { label: "Monospace", stack: "'IBM Plex Mono', 'Courier New', monospace" },
+};
+const FONT_SIZES = { small: 0.9, medium: 1, large: 1.15 };
+const THEME_LABELS = { green: "Green (default)", yellow: "Yellow", dark: "Dark mode", light: "Light mode" };
+const FONT_SIZE_LABELS = { small: "Small", medium: "Medium (default)", large: "Large" };
+
+const CATEGORIES = [
+  { key: "mens", label: "Men's" },
+  { key: "womens", label: "Women's" },
+  { key: "mixed", label: "Mixed" },
+];
+const FORMATS = [
+  { key: "roundrobin", label: "Round Robin" },
+  { key: "bracket", label: "Bracket" },
+  { key: "bracketedrr", label: "Bracketed RR" },
+];
+
+function nextPowerOfTwo(n) { let p = 1; while (p < n) p *= 2; return Math.max(p, 2); }
+const uid = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+const fmt = (n) => `₱${(n || 0).toFixed(2)}`;
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Renders an off-screen HTML node to a canvas via html2canvas, then removes it. Building a
+// dedicated node (rather than screenshotting the live page) means no buttons, checkboxes, or
+// other interactive chrome end up in the exported image — just a clean, presentation-ready
+// table, exactly like casual.html's Bills export.
+async function renderExportCanvas(node, colors) {
+  document.body.appendChild(node);
+  try {
+    return await window.html2canvas(node, { backgroundColor: colors.cream, scale: 2 });
+  } finally {
+    document.body.removeChild(node);
+  }
+}
+
+// Standard "avoid top seeds meeting early" bracket ordering. seedOrder(4) => [1,4,2,3] means
+// bracket slot order is seed1, seed4, seed2, seed3 — paired consecutively: (1v4), (2v3).
+function seedOrder(n) {
+  if (n === 1) return [1];
+  const prev = seedOrder(n / 2);
+  const result = [];
+  prev.forEach((s) => { result.push(s); result.push(n + 1 - s); });
+  return result;
+}
+
+// Builds the full match tree for a category: Winners bracket always; Losers bracket + Grand
+// Final too if type is "double". Teams are seeded in registration order (seed 1 = first
+// registered). Byes (when team count isn't a power of 2) go to the top seeds, standard
+// tournament convention. Every match gets a `feedsWinnerTo` / `feedsLoserTo` pointer saying
+// exactly which future match's slot it fills in — that's what makes later rounds able to
+// "fill themselves in" automatically as results come in.
+// NOTE: byes are only ever placed in Round 1 (standard practice), so Losers-bracket bye
+// handling only needs to account for Round-1 byes feeding into Losers Round 1 — a deliberate
+// simplification for very small/uneven team counts.
+function generateBracketMatches(categoryTeams, category, type) {
+  const size = nextPowerOfTwo(categoryTeams.length);
+  const totalRounds = Math.log2(size);
+  const order = seedOrder(size);
+  const seedTeam = (seed) => (seed <= categoryTeams.length ? categoryTeams[seed - 1] : null);
+
+  const wbRounds = [];
+  const round1 = [];
+  for (let i = 0; i < size / 2; i++) {
+    const teamA = seedTeam(order[i * 2]);
+    const teamB = seedTeam(order[i * 2 + 1]);
+    const isBye = !teamA || !teamB;
+    const winnerId = isBye ? (teamA ? teamA.id : teamB.id) : null;
+    round1.push({ id: uid("bm"), category, bracket: "winners", round: 1, slot: i, teamAId: teamA?.id || null, teamBId: teamB?.id || null, scoreA: null, scoreB: null, winnerId, loserId: null, isBye });
+  }
+  wbRounds.push(round1);
+  for (let r = 2; r <= totalRounds; r++) {
+    const prev = wbRounds[r - 2];
+    const roundMatches = [];
+    for (let i = 0; i < prev.length / 2; i++) {
+      const m1 = prev[i * 2], m2 = prev[i * 2 + 1];
+      const teamAId = m1.isBye ? m1.winnerId : null;
+      const teamBId = m2.isBye ? m2.winnerId : null;
+      const isBye = m1.isBye && m2.isBye;
+      const winnerId = isBye ? (teamAId || teamBId) : null;
+      roundMatches.push({ id: uid("bm"), category, bracket: "winners", round: r, slot: i, teamAId, teamBId, scoreA: null, scoreB: null, winnerId, loserId: null, isBye });
+    }
+    wbRounds.push(roundMatches);
+  }
+  for (let r = 1; r < totalRounds; r++) {
+    wbRounds[r - 1].forEach((m, i) => { m.feedsWinnerTo = { round: r + 1, slot: Math.floor(i / 2), pos: i % 2 === 0 ? "A" : "B", bracket: "winners" }; });
+  }
+  const matches = wbRounds.flat();
+  const wbFinal = wbRounds[totalRounds - 1][0];
+
+  if (type !== "double") {
+    wbFinal.feedsWinnerTo = null; // WB final winner IS the champion — nothing further to feed
+    return { matches, meta: { category, type: "single", size, totalRounds } };
+  }
+
+  // --- Losers bracket ---
+  let lbRoundNum = 0;
+  const lbAll = [];
+  const lr1 = [];
+  for (let i = 0; i < round1.length; i += 2) {
+    const m1 = round1[i], m2 = round1[i + 1];
+    lbRoundNum = 1;
+    const bothBye = m1.isBye && m2.isBye;
+    const oneBye = (m1.isBye || m2.isBye) && !bothBye; // exactly one feeder is a bye — this slot will only EVER get one team
+    lr1.push({
+      id: uid("bm"), category, bracket: "losers", round: lbRoundNum, slot: i / 2,
+      teamAId: null, teamBId: null, scoreA: null, scoreB: null, winnerId: null, loserId: null,
+      isBye: bothBye, autoAdvanceIfSingle: oneBye,
+    });
+    const target = lr1[lr1.length - 1];
+    if (!m1.isBye) m1.feedsLoserTo = { round: lbRoundNum, slot: target.slot, pos: "A", bracket: "losers" };
+    if (!m2.isBye) m2.feedsLoserTo = { round: lbRoundNum, slot: target.slot, pos: "B", bracket: "losers" };
+  }
+  lbAll.push(...lr1);
+  let prevLB = lr1;
+
+  for (let r = 2; r <= totalRounds - 1; r++) {
+    lbRoundNum++;
+    const wbR = wbRounds[r - 1];
+    const dropin = [];
+    for (let i = 0; i < prevLB.length; i++) {
+      dropin.push({ id: uid("bm"), category, bracket: "losers", round: lbRoundNum, slot: i, teamAId: null, teamBId: null, scoreA: null, scoreB: null, winnerId: null, loserId: null, isBye: false, autoAdvanceIfSingle: wbR[i].isBye });
+      prevLB[i].feedsWinnerTo = { round: lbRoundNum, slot: i, pos: "A", bracket: "losers" };
+      if (!wbR[i].isBye) wbR[i].feedsLoserTo = { round: lbRoundNum, slot: i, pos: "B", bracket: "losers" };
+    }
+    lbAll.push(...dropin);
+    prevLB = dropin;
+    if (prevLB.length > 1 && r < totalRounds - 1) {
+      lbRoundNum++;
+      const consolidation = [];
+      for (let i = 0; i < prevLB.length; i += 2) {
+        consolidation.push({ id: uid("bm"), category, bracket: "losers", round: lbRoundNum, slot: i / 2, teamAId: null, teamBId: null, scoreA: null, scoreB: null, winnerId: null, loserId: null, isBye: false, autoAdvanceIfSingle: false });
+        prevLB[i].feedsWinnerTo = { round: lbRoundNum, slot: i / 2, pos: "A", bracket: "losers" };
+        prevLB[i + 1].feedsWinnerTo = { round: lbRoundNum, slot: i / 2, pos: "B", bracket: "losers" };
+      }
+      lbAll.push(...consolidation);
+      prevLB = consolidation;
+    }
+  }
+  // Final losers-bracket match: the last LB survivor vs the Winners-bracket final's loser.
+  lbRoundNum++;
+  const lbFinal = { id: uid("bm"), category, bracket: "losers", round: lbRoundNum, slot: 0, teamAId: null, teamBId: null, scoreA: null, scoreB: null, winnerId: null, loserId: null, isBye: false, autoAdvanceIfSingle: wbFinal.isBye };
+  prevLB[prevLB.length - 1].feedsWinnerTo = { round: lbRoundNum, slot: 0, pos: "A", bracket: "losers" };
+  wbFinal.feedsLoserTo = { round: lbRoundNum, slot: 0, pos: "B", bracket: "losers" };
+  lbAll.push(lbFinal);
+
+  const grandFinal = { id: uid("bm"), category, bracket: "grandfinal", round: 1, slot: 0, teamAId: null, teamBId: null, scoreA: null, scoreB: null, winnerId: null, loserId: null, isBye: false };
+  wbFinal.feedsWinnerTo = { round: 1, slot: 0, pos: "A", bracket: "grandfinal" };
+  lbFinal.feedsWinnerTo = { round: 1, slot: 0, pos: "B", bracket: "grandfinal" };
+
+  return { matches: [...matches, ...lbAll, grandFinal], meta: { category, type: "double", size, totalRounds } };
+}
+
+// Runs after generation and after every score entry: fills in any match slot that can now be
+// determined (a winner/loser feeding into the next match, or a "bye" match where only one side
+// ever had a real team). Loops a fixed number of passes — more than enough for any realistic
+// bracket depth — until nothing changes.
+function resolveBracketPropagation(matchList) {
+  let matches = matchList.map((m) => ({ ...m }));
+  const byId = Object.fromEntries(matches.map((m) => [m.id, m]));
+  for (let pass = 0; pass < 12; pass++) {
+    let changed = false;
+    matches.forEach((m) => {
+      if (m.winnerId) return; // already resolved
+      if (m.isBye) {
+        const only = m.teamAId || m.teamBId;
+        if (only) { m.winnerId = only; changed = true; }
+        return;
+      }
+      if (m.autoAdvanceIfSingle) {
+        const filled = [m.teamAId, m.teamBId].filter(Boolean);
+        if (filled.length === 1 && (m.teamAId === null || m.teamBId === null)) {
+          m.winnerId = filled[0]; changed = true;
+        }
+      }
+    });
+    matches.forEach((m) => {
+      if (!m.winnerId) return;
+      if (m.feedsWinnerTo) {
+        const target = matches.find((t) => t.bracket === m.feedsWinnerTo.bracket && t.round === m.feedsWinnerTo.round && t.slot === m.feedsWinnerTo.slot);
+        if (target) {
+          const key = m.feedsWinnerTo.pos === "A" ? "teamAId" : "teamBId";
+          if (target[key] !== m.winnerId) { target[key] = m.winnerId; changed = true; }
+        }
+      }
+      if (m.loserId && m.feedsLoserTo) {
+        const target = matches.find((t) => t.bracket === m.feedsLoserTo.bracket && t.round === m.feedsLoserTo.round && t.slot === m.feedsLoserTo.slot);
+        if (target) {
+          const key = m.feedsLoserTo.pos === "A" ? "teamAId" : "teamBId";
+          if (target[key] !== m.loserId) { target[key] = m.loserId; changed = true; }
+        }
+      }
+    });
+    if (!changed) break;
+  }
+  return matches;
+}
+
+// Tallies each team's record within a pool from the pool's own matches, then sorts using the
+// agreed order: Wins first, then point/game difference, then (only for teams still tied on
+// both) head-to-head result between that exact pair.
+function computeStandings(teamIds, matches, teamsById) {
+  const rows = teamIds.map((id) => ({ id, name: teamsById[id]?.label || "?", played: 0, won: 0, lost: 0, pf: 0, pa: 0 }));
+  const rowById = Object.fromEntries(rows.map((r) => [r.id, r]));
+  matches.forEach((m) => {
+    if (m.scoreA === null || m.scoreB === null || m.scoreA === "" || m.scoreB === "") return; // not played yet
+    const a = Number(m.scoreA), b = Number(m.scoreB);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return; // incomplete or invalid — ties aren't supported
+    const ra = rowById[m.teamAId], rb = rowById[m.teamBId];
+    if (!ra || !rb) return;
+    ra.played++; rb.played++;
+    ra.pf += a; ra.pa += b;
+    rb.pf += b; rb.pa += a;
+    if (a > b) { ra.won++; rb.lost++; } else { rb.won++; ra.lost++; }
+  });
+  rows.forEach((r) => { r.diff = r.pf - r.pa; });
+  rows.sort((x, y) => {
+    if (y.won !== x.won) return y.won - x.won;
+    if (y.diff !== x.diff) return y.diff - x.diff;
+    const h2h = matches.find((m) => (m.teamAId === x.id && m.teamBId === y.id) || (m.teamAId === y.id && m.teamBId === x.id));
+    if (h2h && h2h.scoreA !== null && h2h.scoreB !== null && h2h.scoreA !== "" && h2h.scoreB !== "") {
+      const xIsA = h2h.teamAId === x.id;
+      const xScore = Number(xIsA ? h2h.scoreA : h2h.scoreB);
+      const yScore = Number(xIsA ? h2h.scoreB : h2h.scoreA);
+      if (Number.isFinite(xScore) && Number.isFinite(yScore) && xScore !== yScore) return xScore > yScore ? -1 : 1;
+    }
+    return 0;
+  });
+  return rows;
+}
+
+// Small reusable table-row builder for standings, shared by every category's Round Robin /
+// Bracketed Round Robin section in the Ranking export.
+function buildStandingsTableHtml(standings, colors) {
+  const headCells = ["Team", "P", "W", "L", "+/-"].map((h) => `<td style="padding:5px 8px; font-size:10px; font-weight:700; text-transform:uppercase; color:${colors.muted};">${h}</td>`).join("");
+  const bodyRows = standings.map((r, i) => {
+    const lead = i === 0 && r.played > 0;
+    return `<tr style="border-top:1px solid #00000014;"><td style="padding:5px 8px; font-size:12.5px; ${lead ? `font-weight:700; color:${colors.accent};` : ""}">${escapeHtml(r.name)}</td><td style="padding:5px 8px; font-size:12.5px;">${r.played}</td><td style="padding:5px 8px; font-size:12.5px;">${r.won}</td><td style="padding:5px 8px; font-size:12.5px;">${r.lost}</td><td style="padding:5px 8px; font-size:12.5px;">${r.diff > 0 ? `+${r.diff}` : r.diff}</td></tr>`;
+  }).join("");
+  return `<table style="width:100%; border-collapse:collapse; margin-bottom:8px;"><thead><tr>${headCells}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+}
+
+// Builds the full Ranking export as one off-screen node — walking the same category → format
+// structure the on-screen Ranking tab uses, but as clean HTML strings instead of live React
+// components. Categories with no data are skipped automatically, same as on screen.
+function buildRankingExportNode(colors, teams, rrPools, rrMatches, bracketMeta, bracketMatches, brBrackets, brMatches, brPlayoffMatches) {
+  const teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
+  const node = document.createElement("div");
+  node.style.cssText = `position:fixed; top:-9999px; left:0; width:460px; font-family:'Manrope',sans-serif; background:${colors.cream};`;
+
+  const sectionsHtml = CATEGORIES.map((cat) => {
+    const pools = rrPools.filter((p) => p.category === cat.key);
+    const meta = bracketMeta.find((b) => b.category === cat.key);
+    const brackets = brBrackets.filter((b) => b.category === cat.key);
+    if (pools.length === 0 && !meta && brackets.length === 0) return "";
+
+    let html = `<div style="padding:14px 16px 6px;"><div style="font-family:'Oswald',sans-serif; font-size:14px; text-transform:uppercase; color:${colors.accent}; font-weight:700; margin-bottom:8px;">${escapeHtml(cat.label)}</div>`;
+
+    pools.forEach((pool) => {
+      const poolMatches = rrMatches.filter((m) => m.poolId === pool.id);
+      const standings = computeStandings(pool.teamIds, poolMatches, teamsById);
+      html += `<div style="font-size:11px; font-weight:700; color:${colors.muted}; margin:8px 0 4px;">${escapeHtml(pool.name)} (Round Robin)</div>`;
+      html += buildStandingsTableHtml(standings, colors);
+    });
+
+    if (meta) {
+      const catMatches = bracketMatches.filter((m) => m.category === cat.key);
+      const grandFinal = catMatches.find((m) => m.bracket === "grandfinal");
+      const wbFinal = catMatches.find((m) => m.bracket === "winners" && m.round === meta.totalRounds);
+      const champFinal = meta.type === "double" ? grandFinal : wbFinal;
+      const champion = champFinal?.winnerId ? teamsById[champFinal.winnerId]?.label : null;
+      const runnerUpId = champFinal?.winnerId ? (champFinal.teamAId === champFinal.winnerId ? champFinal.teamBId : champFinal.teamAId) : null;
+      const semifinalRound = meta.totalRounds - 1;
+      const semis = semifinalRound >= 1 ? catMatches.filter((m) => m.bracket === "winners" && m.round === semifinalRound) : [];
+      const semifinalists = semis.flatMap((m) => [m.teamAId, m.teamBId]).filter((id) => id && id !== champFinal?.winnerId && id !== runnerUpId);
+      html += `<div style="font-size:11px; font-weight:700; color:${colors.muted}; margin:8px 0 4px;">Bracket (${meta.type === "double" ? "Double" : "Single"} elimination)</div>`;
+      if (champion) {
+        html += `<div style="font-size:13px; padding:2px 0;">🏆 <b>Champion:</b> ${escapeHtml(champion)}</div>`;
+        if (runnerUpId) html += `<div style="font-size:13px; padding:2px 0;">🥈 <b>Runner-up:</b> ${escapeHtml(teamsById[runnerUpId]?.label || "?")}</div>`;
+        if (semifinalists.length > 0) html += `<div style="font-size:13px; padding:2px 0;">🥉 <b>Semifinalists:</b> ${escapeHtml(semifinalists.map((id) => teamsById[id]?.label).join(", "))}</div>`;
+      } else {
+        html += `<div style="font-size:12px; color:${colors.muted};">Bracket in progress — no champion yet.</div>`;
+      }
+    }
+
+    if (brackets.length > 0) {
+      const catPlayoffMatches = brPlayoffMatches.filter((m) => m.category === cat.key);
+      html += `<div style="font-size:11px; font-weight:700; color:${colors.muted}; margin:8px 0 4px;">Bracketed Round Robin</div>`;
+      if (catPlayoffMatches.length === 0) {
+        html += `<div style="font-size:12px; color:${colors.muted};">In progress — no placement playoff yet.</div>`;
+      } else {
+        const playoffTeamIds = [...new Set(catPlayoffMatches.flatMap((m) => [m.teamAId, m.teamBId]))];
+        const finalStandings = computeStandings(playoffTeamIds, catPlayoffMatches, teamsById);
+        finalStandings.forEach((r, i) => {
+          const medal = i === 0 ? "🏆" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
+          html += `<div style="font-size:13px; padding:2px 0;">${medal} <b>${escapeHtml(r.name)}</b></div>`;
+        });
+      }
+    }
+
+    html += `</div>`;
+    return html;
+  }).filter(Boolean).join(`<div style="border-top:1px solid #00000014;"></div>`);
+
+  node.innerHTML = `
+    <div style="background:${colors.headerBg}; color:${colors.headerText}; padding:14px 16px; font-weight:700; font-size:15px; font-family:'Oswald',sans-serif; text-transform:uppercase;">Undercover Tournament &mdash; Ranking</div>
+    ${sectionsHtml}`;
+  return node;
+}
+
+// Builds the Payment export — same visual language as casual.html's Bills (green checkmark for
+// paid, muted dash for unpaid) instead of a literal on/off checkbox control.
+function buildPaymentExportNode(colors, participants, fee) {
+  const node = document.createElement("div");
+  node.style.cssText = `position:fixed; top:-9999px; left:0; width:420px; font-family:'Manrope',sans-serif; background:${colors.cream};`;
+  const headCells = ["Participant", "Fee", "Paid"].map((h) => `<td style="padding:8px 12px; font-size:10px; font-weight:700; text-transform:uppercase; color:${colors.muted};">${h}</td>`).join("");
+  const bodyRows = participants.length
+    ? participants.map((p) => `<tr style="border-top:1px solid #00000014;"><td style="padding:9px 12px; font-size:13px; color:${colors.ink};">${escapeHtml(p.name)}</td><td style="padding:9px 12px; font-size:13px; font-family:'IBM Plex Mono',monospace;">${fmt(fee)}</td><td style="padding:9px 12px;">${p.paid ? '<span style="color:#2E9E4F; font-weight:700; font-size:14px;">&#10004;</span>' : '<span style="color:#9A9A9A;">&mdash;</span>'}</td></tr>`).join("")
+    : `<tr><td colspan="3" style="padding:14px 12px; color:${colors.muted}; font-size:12px;">No participants yet.</td></tr>`;
+  const paidCount = participants.filter((p) => p.paid).length;
+  const collected = paidCount * fee;
+  const expected = participants.length * fee;
+  node.innerHTML = `
+    <div style="background:${colors.headerBg}; color:${colors.headerText}; padding:14px 16px; font-weight:700; font-size:15px; font-family:'Oswald',sans-serif; text-transform:uppercase;">Undercover Tournament &mdash; Payment</div>
+    <table style="width:100%; border-collapse:collapse;">
+      <thead><tr style="background:${colors.card};">${headCells}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+      <tfoot><tr style="border-top:2px solid ${colors.accent};"><td style="padding:9px 12px; font-weight:800; font-size:12.5px; font-family:'IBM Plex Mono',monospace;">Total</td><td style="padding:9px 12px; font-weight:800; font-size:12.5px; font-family:'IBM Plex Mono',monospace;">${fmt(expected)}</td><td style="padding:9px 12px; font-weight:800; font-size:12.5px; font-family:'IBM Plex Mono',monospace;">${fmt(collected)}</td></tr></tfoot>
+    </table>`;
+  return node;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Storage helpers                                                        */
+/* ---------------------------------------------------------------------- */
+function loadKey(key, fallback) {
+  try { const raw = localStorage.getItem(key); return raw !== null ? JSON.parse(raw) : fallback; }
+  catch { return fallback; }
+}
+function saveKey(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+// This page is opened as tournament.html?session=<id>. Every per-competition storage key gets
+// this session id stitched onto the end, exactly like shuttle-queue-personal.html does for
+// Casual sessions — but with a "comp_" prefix instead of "bq_", so a Competition and a Casual
+// session can never accidentally read or overwrite each other's data, even if IDs collided.
+function getSessionId() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("session") || "unknown";
+}
+const SESSION_ID = getSessionId();
+function sessionKey(key) { return `${key}__${SESSION_ID}`; }
+
+function App() {
+  const [loaded, setLoaded] = useState(false);
+  const [theme, setTheme] = useState("green");
+  const [fontChoice, setFontChoice] = useState("manrope");
+  const [fontSizeChoice, setFontSizeChoice] = useState("medium");
+  const [geminiKeys, setGeminiKeys] = useState(["", "", ""]);
+  const [geminiKeyIndex, setGeminiKeyIndex] = useState(0);
+  const [compLabel, setCompLabel] = useState("Tournament");
+  const [compDateLabel, setCompDateLabel] = useState("");
+  const [participants, setParticipants] = useState([]);
+  const [registrationFee, setRegistrationFee] = useState("");
+  const [teams, setTeams] = useState([]);
+  const [rrPools, setRrPools] = useState([]);
+  const [rrMatches, setRrMatches] = useState([]);
+  const [bracketMeta, setBracketMeta] = useState([]);
+  const [bracketMatches, setBracketMatches] = useState([]);
+  const [brBrackets, setBrBrackets] = useState([]);
+  const [brMatches, setBrMatches] = useState([]);
+  const [brPlayoffMatches, setBrPlayoffMatches] = useState([]);
+  const [tab, setTab] = useState("teams"); // 'teams' | 'matches' | 'payment'
+  const [matchCategory, setMatchCategory] = useState("mens");
+  const [matchFormat, setMatchFormat] = useState("roundrobin");
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    // Appearance is a GLOBAL setting (shared with Casual + the landing page) — same key name,
+    // no sessionKey() involved, so changing the theme anywhere changes it everywhere.
+    const appearance = loadKey("bq_appearance", { theme: "green", font: "manrope", fontSize: "medium" });
+    setTheme(THEMES[appearance.theme] ? appearance.theme : "green");
+    setFontChoice(FONT_OPTIONS[appearance.font] ? appearance.font : "manrope");
+    setFontSizeChoice(FONT_SIZES[appearance.fontSize] ? appearance.fontSize : "medium");
+    const gKeys = loadKey("bq_geminiKeys", ["", "", ""]);
+    setGeminiKeys(Array.isArray(gKeys) && gKeys.length === 3 ? gKeys : ["", "", ""]);
+    const gIdx = loadKey("bq_geminiKeyIndex", 0);
+    setGeminiKeyIndex(Number.isInteger(gIdx) && gIdx >= 0 && gIdx < 3 ? gIdx : 0);
+
+    // The competition's name/date live on the landing page's "uc_competitions" list — this page
+    // just looks itself up in that list by SESSION_ID, the same way shuttle-queue-personal.html
+    // looks up its own date label from "uc_activities".
+    const competitions = loadKey("uc_competitions", []);
+    const mine = Array.isArray(competitions) ? competitions.find((c) => c.id === SESSION_ID) : null;
+    setCompLabel(mine ? mine.label : "Tournament");
+    setCompDateLabel(mine ? mine.dateLabel : "");
+
+    setParticipants(loadKey(sessionKey("comp_participants"), []));
+    setRegistrationFee(loadKey(sessionKey("comp_registrationFee"), ""));
+    setTeams(loadKey(sessionKey("comp_teams"), []));
+    setRrPools(loadKey(sessionKey("comp_rrPools"), []));
+    setRrMatches(loadKey(sessionKey("comp_rrMatches"), []));
+    setBracketMeta(loadKey(sessionKey("comp_bracketMeta"), []));
+    setBracketMatches(loadKey(sessionKey("comp_bracketMatches"), []));
+    setBrBrackets(loadKey(sessionKey("comp_brBrackets"), []));
+    setBrMatches(loadKey(sessionKey("comp_brMatches"), []));
+    setBrPlayoffMatches(loadKey(sessionKey("comp_brPlayoffMatches"), []));
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_participants"), participants); }, [participants, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_registrationFee"), registrationFee); }, [registrationFee, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_teams"), teams); }, [teams, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_rrPools"), rrPools); }, [rrPools, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_rrMatches"), rrMatches); }, [rrMatches, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_bracketMeta"), bracketMeta); }, [bracketMeta, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_bracketMatches"), bracketMatches); }, [bracketMatches, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_brBrackets"), brBrackets); }, [brBrackets, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_brMatches"), brMatches); }, [brMatches, loaded]);
+  useEffect(() => { if (loaded) saveKey(sessionKey("comp_brPlayoffMatches"), brPlayoffMatches); }, [brPlayoffMatches, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_appearance", { theme, font: fontChoice, fontSize: fontSizeChoice }); }, [theme, fontChoice, fontSizeChoice, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_geminiKeys", geminiKeys); }, [geminiKeys, loaded]);
+  useEffect(() => { if (loaded) saveKey("bq_geminiKeyIndex", geminiKeyIndex); }, [geminiKeyIndex, loaded]);
+
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); }, [toast]);
+  const notify = (msg) => setToast(msg);
+
+  const COLORS = THEMES[theme];
+  const fontFamily = FONT_OPTIONS[fontChoice].stack;
+  const fontScale = FONT_SIZES[fontSizeChoice];
+
+  const addParticipant = (name, gender) => {
+    if (!name.trim()) return;
+    setParticipants((prev) => [...prev, { id: uid("p"), name: name.trim(), gender }]);
+  };
+  const removeParticipant = (id) => {
+    setParticipants((prev) => prev.filter((p) => p.id !== id));
+    // A deleted participant shouldn't leave a "ghost" in a team — drop them from any team's
+    // player list. If that empties a team below 2 players, remove the team entirely.
+    setTeams((prev) => prev.map((t) => ({ ...t, playerIds: t.playerIds.filter((pid) => pid !== id) })).filter((t) => t.playerIds.length >= 2));
+  };
+  const togglePaid = (id) => setParticipants((prev) => prev.map((p) => (p.id === id ? { ...p, paid: !p.paid } : p)));
+
+  // A participant counts as "assigned" for a category if they're already on a team in THAT
+  // category — they can still be picked for a different category (e.g. Men's AND Mixed).
+  const assignedIdsForCategory = (category) => new Set(teams.filter((t) => t.category === category).flatMap((t) => t.playerIds));
+
+  const genderRuleForCategory = { mens: ["M", "M"], womens: ["F", "F"], mixed: ["M", "F"] };
+
+  const addFixedTeam = (category, playerIdA, playerIdB) => {
+    if (!playerIdA || !playerIdB || playerIdA === playerIdB) { notify("Pick two different players."); return; }
+    const pA = participants.find((p) => p.id === playerIdA);
+    const pB = participants.find((p) => p.id === playerIdB);
+    setTeams((prev) => [...prev, { id: uid("team"), category, mode: "fixed", playerIds: [playerIdA, playerIdB], label: `${pA?.name || "?"} & ${pB?.name || "?"}` }]);
+    notify("Team added.");
+  };
+
+  // Auto-pair: takes everyone in this category not already on a team, matches the gender rule,
+  // shuffles them, then pairs them up two-at-a-time. Leftover odd-one-out (if any) just stays
+  // unassigned and can be fixed-paired manually or wait for another participant.
+  const autoPairCategory = (category) => {
+    const assigned = assignedIdsForCategory(category);
+    const rule = genderRuleForCategory[category];
+    let pool;
+    if (category === "mixed") {
+      const males = participants.filter((p) => p.gender === "M" && !assigned.has(p.id));
+      const females = participants.filter((p) => p.gender === "F" && !assigned.has(p.id));
+      const shuffledM = [...males].sort(() => Math.random() - 0.5);
+      const shuffledF = [...females].sort(() => Math.random() - 0.5);
+      const pairCount = Math.min(shuffledM.length, shuffledF.length);
+      if (pairCount === 0) { notify("Need at least 1 unassigned man and 1 unassigned woman."); return; }
+      const newTeams = Array.from({ length: pairCount }, (_, i) => ({
+        id: uid("team"), category, mode: "auto", playerIds: [shuffledM[i].id, shuffledF[i].id], label: `${shuffledM[i].name} & ${shuffledF[i].name}`,
+      }));
+      setTeams((prev) => [...prev, ...newTeams]);
+      notify(`Auto-paired ${pairCount} mixed team${pairCount !== 1 ? "s" : ""}.`);
+      return;
+    }
+    const wantGender = rule[0];
+    pool = participants.filter((p) => p.gender === wantGender && !assigned.has(p.id));
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    const pairCount = Math.floor(shuffled.length / 2);
+    if (pairCount === 0) { notify(`Need at least 2 unassigned ${wantGender === "M" ? "men" : "women"}.`); return; }
+    const newTeams = Array.from({ length: pairCount }, (_, i) => ({
+      id: uid("team"), category, mode: "auto", playerIds: [shuffled[i * 2].id, shuffled[i * 2 + 1].id], label: `${shuffled[i * 2].name} & ${shuffled[i * 2 + 1].name}`,
+    }));
+    setTeams((prev) => [...prev, ...newTeams]);
+    notify(`Auto-paired ${pairCount} team${pairCount !== 1 ? "s" : ""}.`);
+  };
+
+  const removeTeam = (id) => setTeams((prev) => prev.filter((t) => t.id !== id));
+
+  // Splits a category's teams into `numPools` pools (round-robin dealt — team 0 to pool 0,
+  // team 1 to pool 1, etc. — so pools come out evenly sized), then builds every one-vs-one
+  // pairing within each pool. This wipes any existing pools/matches for that category first,
+  // since regenerating a schedule while mid-tournament would leave stale, unrelated matches
+  // pointing at pools that no longer exist.
+  const generateRoundRobin = (category, numPools) => {
+    const categoryTeams = teams.filter((t) => t.category === category);
+    if (categoryTeams.length < 2) { notify("Need at least 2 teams in this category first."); return; }
+    const pools = Array.from({ length: numPools }, (_, i) => ({ id: uid("pool"), category, name: `Pool ${String.fromCharCode(65 + i)}`, teamIds: [] }));
+    categoryTeams.forEach((t, i) => pools[i % numPools].teamIds.push(t.id));
+    const newMatches = [];
+    pools.forEach((pool) => {
+      for (let i = 0; i < pool.teamIds.length; i++) {
+        for (let j = i + 1; j < pool.teamIds.length; j++) {
+          newMatches.push({ id: uid("rrm"), poolId: pool.id, category, teamAId: pool.teamIds[i], teamBId: pool.teamIds[j], scoreA: null, scoreB: null });
+        }
+      }
+    });
+    setRrPools((prev) => [...prev.filter((p) => p.category !== category), ...pools]);
+    setRrMatches((prev) => [...prev.filter((m) => m.category !== category), ...newMatches]);
+    notify(`Generated ${pools.length} pool${pools.length !== 1 ? "s" : ""} and ${newMatches.length} match${newMatches.length !== 1 ? "es" : ""}.`);
+  };
+
+  const resetRoundRobin = (category) => {
+    setRrPools((prev) => prev.filter((p) => p.category !== category));
+    setRrMatches((prev) => prev.filter((m) => m.category !== category));
+    notify("Round Robin cleared for this category.");
+  };
+
+  const recordRRScore = (matchId, scoreA, scoreB) => {
+    setRrMatches((prev) => prev.map((m) => (m.id === matchId ? { ...m, scoreA, scoreB } : m)));
+  };
+
+  const generateBracket = (category, type) => {
+    const categoryTeams = teams.filter((t) => t.category === category);
+    if (categoryTeams.length < 2) { notify("Need at least 2 teams in this category first."); return; }
+    // Double elimination's losers-bracket construction pairs up Round-1 losers two at a time,
+    // which needs at least 2 Round-1 matches (i.e. a bracket size of 4+, so 3+ real teams).
+    // With only 2 teams there's nothing meaningful to build a losers bracket out of.
+    const effectiveType = (type === "double" && nextPowerOfTwo(categoryTeams.length) < 4) ? "single" : type;
+    if (effectiveType !== type) notify("Double elimination needs at least 3 teams — using single elimination instead.");
+    const { matches, meta } = generateBracketMatches(categoryTeams, category, effectiveType);
+    const resolved = resolveBracketPropagation(matches); // resolves round-1 byes immediately
+    setBracketMeta((prev) => [...prev.filter((b) => b.category !== category), meta]);
+    setBracketMatches((prev) => [...prev.filter((m) => m.category !== category), ...resolved]);
+    if (effectiveType === type) notify(`${type === "double" ? "Double" : "Single"} elimination bracket generated (${meta.size} slots).`);
+  };
+
+  const resetBracket = (category) => {
+    setBracketMeta((prev) => prev.filter((b) => b.category !== category));
+    setBracketMatches((prev) => prev.filter((m) => m.category !== category));
+    notify("Bracket cleared for this category.");
+  };
+
+  const recordBracketScore = (matchId, scoreA, scoreB) => {
+    const a = Number(scoreA), b = Number(scoreB);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) { notify("Scores must be two different numbers — no ties in a bracket match."); return; }
+    setBracketMatches((prev) => {
+      const updated = prev.map((m) => {
+        if (m.id !== matchId) return m;
+        const winnerId = a > b ? m.teamAId : m.teamBId;
+        const loserId = a > b ? m.teamBId : m.teamAId;
+        return { ...m, scoreA, scoreB, winnerId, loserId };
+      });
+      return resolveBracketPropagation(updated);
+    });
+  };
+
+  // Step 1 of Bracketed Round Robin: split teams into N groups (same even-dealing as plain
+  // Round Robin) but DON'T generate matches yet — this is the "editable" stage where teams show
+  // as tiles and can be moved between brackets before the schedule is locked in.
+  const splitIntoBrackets = (category, numBrackets) => {
+    const categoryTeams = teams.filter((t) => t.category === category);
+    if (categoryTeams.length < 2) { notify("Need at least 2 teams in this category first."); return; }
+    const brackets = Array.from({ length: numBrackets }, (_, i) => ({ id: uid("brk"), category, name: `Bracket ${i + 1}`, teamIds: [] }));
+    categoryTeams.forEach((t, i) => brackets[i % numBrackets].teamIds.push(t.id));
+    setBrBrackets((prev) => [...prev.filter((b) => b.category !== category), ...brackets]);
+    setBrMatches((prev) => prev.filter((m) => m.category !== category));
+    setBrPlayoffMatches((prev) => prev.filter((m) => m.category !== category));
+    notify(`Split into ${numBrackets} brackets — move teams around if needed, then generate matches.`);
+  };
+
+  const moveTeamToBracket = (category, teamId, targetBracketId) => {
+    setBrBrackets((prev) => prev.map((b) => {
+      if (b.category !== category) return b;
+      if (b.id === targetBracketId) return { ...b, teamIds: b.teamIds.includes(teamId) ? b.teamIds : [...b.teamIds, teamId] };
+      return { ...b, teamIds: b.teamIds.filter((id) => id !== teamId) };
+    }));
+  };
+
+  // Step 2: locks in the current groupings and builds every one-vs-one match within each
+  // bracket — same pairing logic as plain Round Robin, just scoped per-bracket instead of
+  // per-pool. Once this runs, moving teams is disabled (matches already reference them).
+  const generateBracketedRRMatches = (category) => {
+    const brackets = brBrackets.filter((b) => b.category === category);
+    const newMatches = [];
+    brackets.forEach((bracket) => {
+      for (let i = 0; i < bracket.teamIds.length; i++) {
+        for (let j = i + 1; j < bracket.teamIds.length; j++) {
+          newMatches.push({ id: uid("brm"), bracketId: bracket.id, category, teamAId: bracket.teamIds[i], teamBId: bracket.teamIds[j], scoreA: null, scoreB: null });
+        }
+      }
+    });
+    setBrMatches((prev) => [...prev.filter((m) => m.category !== category), ...newMatches]);
+    notify(`Generated ${newMatches.length} match${newMatches.length !== 1 ? "es" : ""} across ${brackets.length} brackets.`);
+  };
+
+  const recordBRScore = (matchId, scoreA, scoreB) => {
+    setBrMatches((prev) => prev.map((m) => (m.id === matchId ? { ...m, scoreA, scoreB } : m)));
+  };
+
+  // Step 3: takes the #1-ranked team from each bracket (via the same computeStandings used
+  // everywhere else) and builds a mini round robin among just those winners — this is what
+  // decides final 1st/2nd/3rd place, reusing the exact same engine rather than special-casing
+  // "2 winners" vs "3+ winners".
+  const generatePlayoff = (category) => {
+    const brackets = brBrackets.filter((b) => b.category === category);
+    const teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
+    const winners = brackets.map((bracket) => {
+      const bracketMatchesForThis = brMatches.filter((m) => m.bracketId === bracket.id);
+      const standings = computeStandings(bracket.teamIds, bracketMatchesForThis, teamsById);
+      return standings[0]?.id;
+    }).filter(Boolean);
+    if (winners.length < 2) { notify("Need at least 2 bracket winners to generate a playoff."); return; }
+    const newMatches = [];
+    for (let i = 0; i < winners.length; i++) {
+      for (let j = i + 1; j < winners.length; j++) {
+        newMatches.push({ id: uid("bpm"), category, teamAId: winners[i], teamBId: winners[j], scoreA: null, scoreB: null });
+      }
+    }
+    setBrPlayoffMatches((prev) => [...prev.filter((m) => m.category !== category), ...newMatches]);
+    notify(`Placement playoff generated — ${winners.length} bracket winners.`);
+  };
+
+  const recordPlayoffScore = (matchId, scoreA, scoreB) => {
+    setBrPlayoffMatches((prev) => prev.map((m) => (m.id === matchId ? { ...m, scoreA, scoreB } : m)));
+  };
+
+  const resetBracketedRR = (category) => {
+    setBrBrackets((prev) => prev.filter((b) => b.category !== category));
+    setBrMatches((prev) => prev.filter((m) => m.category !== category));
+    setBrPlayoffMatches((prev) => prev.filter((m) => m.category !== category));
+    notify("Bracketed Round Robin cleared for this category.");
+  };
+
+  if (!loaded) return null;
+
+  return (
+    <div className="cp-root" style={{ fontFamily, fontSize: `${14 * fontScale}px` }}>
+      <CompetitionStyles colors={COLORS} fontFamily={fontFamily} />
+
+      <header className="cp-header">
+        <div className="cp-brand-row">
+          <img src="undercover-logo-wide.png" alt="Undercover Badminton Club" className="cp-brand-logo" />
+          <div className="cp-brand-text">
+            <h1>{compLabel}</h1>
+            {compDateLabel && <span className="cp-header-date">{compDateLabel}</span>}
+          </div>
+          <a href="index.html" className="cp-back-circle" title="Back to Undercover home" aria-label="Back to Undercover home"><ChevronLeft size={20} /></a>
+        </div>
+        <div className="cp-header-line" />
+      </header>
+
+      <nav className="cp-tabbar">
+        <button className={`cp-tab ${tab === "teams" ? "cp-tab-active" : ""}`} onClick={() => setTab("teams")}>Teams <span className="cp-tab-count">({teams.length})</span></button>
+        <button className={`cp-tab ${tab === "matches" ? "cp-tab-active" : ""}`} onClick={() => setTab("matches")}>Matches</button>
+        <button className={`cp-tab ${tab === "ranking" ? "cp-tab-active" : ""}`} onClick={() => setTab("ranking")}>Ranking</button>
+        <button className={`cp-tab ${tab === "payment" ? "cp-tab-active" : ""}`} onClick={() => setTab("payment")}>Payment</button>
+        <button className={`cp-tab cp-tab-icon-only ${tab === "settings" ? "cp-tab-active" : ""}`} onClick={() => setTab("settings")} title="Settings" aria-label="Settings"><Settings size={16} /></button>
+      </nav>
+
+      <main className="cp-main">
+        {tab === "teams" && (
+          <TeamsTab
+            participants={participants} teams={teams}
+            addParticipant={addParticipant} removeParticipant={removeParticipant}
+            assignedIdsForCategory={assignedIdsForCategory}
+            addFixedTeam={addFixedTeam} autoPairCategory={autoPairCategory} removeTeam={removeTeam}
+          />
+        )}
+        {tab === "matches" && (
+          <MatchesTab
+            teams={teams} matchCategory={matchCategory} setMatchCategory={setMatchCategory}
+            matchFormat={matchFormat} setMatchFormat={setMatchFormat}
+            rrPools={rrPools} rrMatches={rrMatches} generateRoundRobin={generateRoundRobin} resetRoundRobin={resetRoundRobin} recordRRScore={recordRRScore}
+            bracketMeta={bracketMeta} bracketMatches={bracketMatches} generateBracket={generateBracket} resetBracket={resetBracket} recordBracketScore={recordBracketScore}
+            brBrackets={brBrackets} brMatches={brMatches} brPlayoffMatches={brPlayoffMatches}
+            splitIntoBrackets={splitIntoBrackets} moveTeamToBracket={moveTeamToBracket} generateBracketedRRMatches={generateBracketedRRMatches}
+            recordBRScore={recordBRScore} generatePlayoff={generatePlayoff} recordPlayoffScore={recordPlayoffScore} resetBracketedRR={resetBracketedRR}
+          />
+        )}
+        {tab === "ranking" && (
+          <RankingTab teams={teams} rrPools={rrPools} rrMatches={rrMatches} bracketMeta={bracketMeta} bracketMatches={bracketMatches} brBrackets={brBrackets} brMatches={brMatches} brPlayoffMatches={brPlayoffMatches} colors={COLORS} />
+        )}
+        {tab === "payment" && (
+          <PaymentTab participants={participants} registrationFee={registrationFee} setRegistrationFee={setRegistrationFee} togglePaid={togglePaid} colors={COLORS} />
+        )}
+        {tab === "settings" && (
+          <SettingsTab
+            theme={theme} setTheme={setTheme}
+            fontChoice={fontChoice} setFontChoice={setFontChoice}
+            fontSizeChoice={fontSizeChoice} setFontSizeChoice={setFontSizeChoice}
+            geminiKeys={geminiKeys} setGeminiKeys={setGeminiKeys}
+            geminiKeyIndex={geminiKeyIndex} setGeminiKeyIndex={setGeminiKeyIndex}
+          />
+        )}
+      </main>
+
+      {toast && <div className="cp-toast">{toast}</div>}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Teams tab — participants + per-category team registration             */
+/* ---------------------------------------------------------------------- */
+function TeamsTab({ participants, teams, addParticipant, removeParticipant, assignedIdsForCategory, addFixedTeam, autoPairCategory, removeTeam }) {
+  const [name, setName] = useState("");
+  const [gender, setGender] = useState("M");
+
+  return (
+    <div className="cp-teams">
+      <section className="cp-card">
+        <h2>Participants <span className="cp-muted-sm">({participants.length})</span></h2>
+        <div className="cp-add-row">
+          <input className="cp-input" style={{ flex: 1 }} placeholder="Player name" value={name} onChange={(e) => setName(e.target.value)} />
+          <select className="cp-select" value={gender} onChange={(e) => setGender(e.target.value)}>
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+          </select>
+          <button className="cp-btn cp-btn-primary" onClick={() => { addParticipant(name, gender); setName(""); }}><UserPlus size={14} /> Add</button>
+        </div>
+        {participants.length === 0 ? (
+          <p className="cp-empty">No participants yet — add players above before registering teams.</p>
+        ) : (
+          <div className="cp-chip-list">
+            {participants.map((p) => (
+              <span key={p.id} className="cp-chip">
+                {p.name} <em>({p.gender})</em>
+                <button className="cp-chip-x" onClick={() => removeParticipant(p.id)} aria-label={`Remove ${p.name}`}><X size={11} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {CATEGORIES.map((cat) => (
+        <CategoryTeamsSection
+          key={cat.key}
+          category={cat}
+          participants={participants}
+          teams={teams.filter((t) => t.category === cat.key)}
+          unassigned={participants.filter((p) => !assignedIdsForCategory(cat.key).has(p.id) && (cat.key === "mixed" || p.gender === (cat.key === "mens" ? "M" : "F")))}
+          addFixedTeam={(a, b) => addFixedTeam(cat.key, a, b)}
+          autoPair={() => autoPairCategory(cat.key)}
+          removeTeam={removeTeam}
+        />
+      ))}
+    </div>
+  );
+}
+
+function CategoryTeamsSection({ category, participants, teams, unassigned, addFixedTeam, autoPair, removeTeam }) {
+  const [pickA, setPickA] = useState("");
+  const [pickB, setPickB] = useState("");
+  // For Mixed, split the picker options by gender so it's obvious which slot needs which.
+  const isMixed = category.key === "mixed";
+  const optionsA = (isMixed ? unassigned.filter((p) => p.gender === "M") : unassigned).filter((p) => p.id !== pickB);
+  const optionsB = (isMixed ? unassigned.filter((p) => p.gender === "F") : unassigned).filter((p) => p.id !== pickA);
+
+  return (
+    <section className="cp-card">
+      <div className="cp-section-head">
+        <h2>{category.label} <span className="cp-muted-sm">({teams.length} teams)</span></h2>
+        <button className="cp-btn cp-btn-ghost" onClick={autoPair}><Shuffle size={13} /> Auto-pair</button>
+      </div>
+
+      <div className="cp-add-row">
+        <select className="cp-select" style={{ flex: 1 }} value={pickA} onChange={(e) => setPickA(e.target.value)}>
+          <option value="">{isMixed ? "Pick a man…" : "Pick a player…"}</option>
+          {optionsA.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select className="cp-select" style={{ flex: 1 }} value={pickB} onChange={(e) => setPickB(e.target.value)}>
+          <option value="">{isMixed ? "Pick a woman…" : "Pick a partner…"}</option>
+          {optionsB.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <button className="cp-btn cp-btn-primary" onClick={() => { addFixedTeam(pickA, pickB); setPickA(""); setPickB(""); }}>Add team</button>
+      </div>
+
+      {teams.length === 0 ? (
+        <p className="cp-empty">No {category.label.toLowerCase()} teams yet.</p>
+      ) : (
+        <div className="cp-team-list">
+          {teams.map((t) => (
+            <div key={t.id} className="cp-team-row">
+              <span>{t.label}</span>
+              <button className="cp-icon-btn" onClick={() => removeTeam(t.id)} aria-label="Remove team"><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Matches tab — Phase A scaffolding only: Category × Format navigation,  */
+/*  showing the registered teams for that combination. The actual Round    */
+/*  Robin / Bracket engines (schedule generation, standings, score entry)  */
+/*  are built in Phase B and Phase C.                                      */
+/* ---------------------------------------------------------------------- */
+function MatchesTab({
+  teams, matchCategory, setMatchCategory, matchFormat, setMatchFormat,
+  rrPools, rrMatches, generateRoundRobin, resetRoundRobin, recordRRScore,
+  bracketMeta, bracketMatches, generateBracket, resetBracket, recordBracketScore,
+  brBrackets, brMatches, brPlayoffMatches, splitIntoBrackets, moveTeamToBracket, generateBracketedRRMatches, recordBRScore, generatePlayoff, recordPlayoffScore, resetBracketedRR,
+}) {
+  const categoryTeams = teams.filter((t) => t.category === matchCategory);
+  const teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
+
+  return (
+    <div className="cp-matches">
+      <div className="cp-subtab-row">
+        {CATEGORIES.map((c) => (
+          <button key={c.key} className={`cp-subtab ${matchCategory === c.key ? "cp-subtab-active" : ""}`} onClick={() => setMatchCategory(c.key)}>{c.label}</button>
+        ))}
+      </div>
+      <div className="cp-subtab-row cp-subtab-row-secondary">
+        {FORMATS.map((f) => (
+          <button key={f.key} className={`cp-subtab cp-subtab-secondary ${matchFormat === f.key ? "cp-subtab-active" : ""}`} onClick={() => setMatchFormat(f.key)}>{f.label}</button>
+        ))}
+      </div>
+
+      {categoryTeams.length === 0 ? (
+        <div className="cp-card"><p className="cp-empty">No teams registered in this category yet — add some in the Teams tab first.</p></div>
+      ) : matchFormat === "roundrobin" ? (
+        <RoundRobinView
+          category={matchCategory} categoryTeams={categoryTeams} teamsById={teamsById}
+          pools={rrPools.filter((p) => p.category === matchCategory)}
+          matches={rrMatches.filter((m) => m.category === matchCategory)}
+          onGenerate={(n) => generateRoundRobin(matchCategory, n)}
+          onReset={() => resetRoundRobin(matchCategory)}
+          onScore={recordRRScore}
+        />
+      ) : matchFormat === "bracket" ? (
+        <BracketView
+          category={matchCategory} categoryTeams={categoryTeams} teamsById={teamsById}
+          meta={bracketMeta.find((b) => b.category === matchCategory)}
+          matches={bracketMatches.filter((m) => m.category === matchCategory)}
+          onGenerate={(type) => generateBracket(matchCategory, type)}
+          onReset={() => resetBracket(matchCategory)}
+          onScore={recordBracketScore}
+        />
+      ) : (
+        <BracketedRoundRobinView
+          category={matchCategory} categoryTeams={categoryTeams} teamsById={teamsById}
+          brackets={brBrackets.filter((b) => b.category === matchCategory)}
+          matches={brMatches.filter((m) => m.category === matchCategory)}
+          playoffMatches={brPlayoffMatches.filter((m) => m.category === matchCategory)}
+          onSplit={(n) => splitIntoBrackets(matchCategory, n)}
+          onMoveTeam={(teamId, targetBracketId) => moveTeamToBracket(matchCategory, teamId, targetBracketId)}
+          onGenerateMatches={() => generateBracketedRRMatches(matchCategory)}
+          onScore={recordBRScore}
+          onGeneratePlayoff={() => generatePlayoff(matchCategory)}
+          onPlayoffScore={recordPlayoffScore}
+          onReset={() => resetBracketedRR(matchCategory)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Round Robin view                                                       */
+/* ---------------------------------------------------------------------- */
+function RoundRobinView({ category, categoryTeams, teamsById, pools, matches, onGenerate, onReset, onScore }) {
+  const [numPools, setNumPools] = useState(1);
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  if (pools.length === 0) {
+    return (
+      <div className="cp-card">
+        <h2><Trophy size={15} /> Round Robin setup</h2>
+        <p className="cp-muted-sm">{categoryTeams.length} team{categoryTeams.length !== 1 ? "s" : ""} registered. Split them into pools, then every team plays everyone else in their pool once.</p>
+        <div className="cp-add-row">
+          <label className="cp-settings-field" style={{ margin: 0 }}>
+            <span>Number of pools</span>
+            <input type="number" min="1" max={Math.max(1, Math.floor(categoryTeams.length / 2))} className="cp-input" style={{ width: 80 }} value={numPools} onChange={(e) => setNumPools(Math.max(1, Number(e.target.value) || 1))} />
+          </label>
+          <button className="cp-btn cp-btn-primary" onClick={() => onGenerate(numPools)}>Generate schedule</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {pools.map((pool) => {
+        const poolMatches = matches.filter((m) => m.poolId === pool.id);
+        const standings = computeStandings(pool.teamIds, poolMatches, teamsById);
+        return (
+          <div className="cp-card" key={pool.id}>
+            <h2><Trophy size={15} /> {pool.name}</h2>
+            <div className="cp-team-list" style={{ marginBottom: 14 }}>
+              {poolMatches.map((m) => (
+                <MatchScoreRow key={m.id} teamsById={teamsById} match={m} onScore={onScore} />
+              ))}
+            </div>
+            <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>Standings</p>
+            <div className="cp-standings-scroll">
+              <table className="cp-standings-table">
+                <thead><tr><th>Team</th><th>P</th><th>W</th><th>L</th><th>+/-</th></tr></thead>
+                <tbody>
+                  {standings.map((r, i) => (
+                    <tr key={r.id} className={i === 0 && r.played > 0 ? "cp-rank-lead" : ""}>
+                      <td>{r.name}</td><td>{r.played}</td><td>{r.won}</td><td>{r.lost}</td><td>{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+      <div className="cp-card">
+        {confirmReset ? (
+          <div className="cp-modal-actions" style={{ justifyContent: "flex-start" }}>
+            <span className="cp-muted-sm">Clear all pools and match results for this category?</span>
+            <button className="cp-btn cp-btn-ghost" onClick={() => setConfirmReset(false)}>Cancel</button>
+            <button className="cp-btn cp-btn-danger" onClick={() => { onReset(); setConfirmReset(false); }}>Yes, clear it</button>
+          </div>
+        ) : (
+          <button className="cp-btn cp-btn-ghost" onClick={() => setConfirmReset(true)}><Trash2 size={13} /> Reset Round Robin</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+// Shared score-entry row used by both Round Robin matches and Bracket matches.
+function MatchScoreRow({ teamsById, match, onScore }) {
+  const [a, setA] = useState(match.scoreA ?? "");
+  const [b, setB] = useState(match.scoreB ?? "");
+  useEffect(() => { setA(match.scoreA ?? ""); setB(match.scoreB ?? ""); }, [match.scoreA, match.scoreB]);
+  const nameA = match.teamAId ? (teamsById[match.teamAId]?.label || "?") : (match.isBye ? "—" : "TBD");
+  const nameB = match.teamBId ? (teamsById[match.teamBId]?.label || "?") : (match.isBye ? "—" : "TBD");
+  const playable = match.teamAId && match.teamBId;
+  const commit = () => { if (playable && a !== "" && b !== "") onScore(match.id, a, b); };
+  return (
+    <div className="cp-match-row">
+      <span className={`cp-match-name ${match.winnerId === match.teamAId ? "cp-match-winner" : ""}`}>{nameA}</span>
+      {playable ? (
+        <div className="cp-match-scores">
+          <input type="text" inputMode="numeric" placeholder="0" className="cp-score-input" value={a} onChange={(e) => setA(e.target.value)} onBlur={commit} />
+          <span>–</span>
+          <input type="text" inputMode="numeric" placeholder="0" className="cp-score-input" value={b} onChange={(e) => setB(e.target.value)} onBlur={commit} />
+        </div>
+      ) : <span className="cp-muted-sm">vs</span>}
+      <span className={`cp-match-name ${match.winnerId === match.teamBId ? "cp-match-winner" : ""}`}>{nameB}</span>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Bracket view                                                           */
+/* ---------------------------------------------------------------------- */
+function BracketView({ category, categoryTeams, teamsById, meta, matches, onGenerate, onReset, onScore }) {
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  if (!meta) {
+    return (
+      <div className="cp-card">
+        <h2><Trophy size={15} /> Bracket setup</h2>
+        <p className="cp-muted-sm">{categoryTeams.length} team{categoryTeams.length !== 1 ? "s" : ""} registered. Choose a format to generate the bracket (seeded by registration order; byes go to the top seeds if the count isn't a power of 2).</p>
+        <div className="cp-add-row">
+          <button className="cp-btn cp-btn-primary" onClick={() => onGenerate("single")}>Single elimination</button>
+          <button className="cp-btn cp-btn-primary" onClick={() => onGenerate("double")}>Double elimination</button>
+        </div>
+      </div>
+    );
+  }
+
+  const winnersRounds = [];
+  for (let r = 1; r <= meta.totalRounds; r++) winnersRounds.push(matches.filter((m) => m.bracket === "winners" && m.round === r));
+  const losersRoundNums = [...new Set(matches.filter((m) => m.bracket === "losers").map((m) => m.round))].sort((x, y) => x - y);
+  const losersRounds = losersRoundNums.map((r) => matches.filter((m) => m.bracket === "losers" && m.round === r));
+  const grandFinal = matches.find((m) => m.bracket === "grandfinal");
+
+  const roundLabel = (r, total) => (r === total ? "Final" : r === total - 1 ? "Semifinals" : `Round ${r}`);
+
+  return (
+    <>
+      <div className="cp-card">
+        <h2><Trophy size={15} /> Winners Bracket</h2>
+        {winnersRounds.map((round, i) => (
+          <div key={i} className="cp-bracket-round">
+            <p className="cp-round-label">{roundLabel(i + 1, meta.totalRounds)}</p>
+            {round.map((m) => <MatchScoreRow key={m.id} teamsById={teamsById} match={m} onScore={onScore} />)}
+          </div>
+        ))}
+      </div>
+
+      {meta.type === "double" && losersRounds.length > 0 && (
+        <div className="cp-card">
+          <h2><Trophy size={15} /> Losers Bracket</h2>
+          {losersRounds.map((round, i) => (
+            <div key={i} className="cp-bracket-round">
+              <p className="cp-round-label">Round {i + 1}</p>
+              {round.map((m) => <MatchScoreRow key={m.id} teamsById={teamsById} match={m} onScore={onScore} />)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {grandFinal && (
+        <div className="cp-card">
+          <h2><Trophy size={15} /> Grand Final</h2>
+          <MatchScoreRow teamsById={teamsById} match={grandFinal} onScore={onScore} />
+          {grandFinal.winnerId && (
+            <p className="cp-champion-line">🏆 Champion: {teamsById[grandFinal.winnerId]?.label}</p>
+          )}
+        </div>
+      )}
+      {meta.type === "single" && matches.find((m) => m.bracket === "winners" && m.round === meta.totalRounds)?.winnerId && (
+        <div className="cp-card">
+          <p className="cp-champion-line">🏆 Champion: {teamsById[matches.find((m) => m.bracket === "winners" && m.round === meta.totalRounds).winnerId]?.label}</p>
+        </div>
+      )}
+
+      <div className="cp-card">
+        {confirmReset ? (
+          <div className="cp-modal-actions" style={{ justifyContent: "flex-start" }}>
+            <span className="cp-muted-sm">Clear this entire bracket?</span>
+            <button className="cp-btn cp-btn-ghost" onClick={() => setConfirmReset(false)}>Cancel</button>
+            <button className="cp-btn cp-btn-danger" onClick={() => { onReset(); setConfirmReset(false); }}>Yes, clear it</button>
+          </div>
+        ) : (
+          <button className="cp-btn cp-btn-ghost" onClick={() => setConfirmReset(true)}><Trash2 size={13} /> Reset Bracket</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Bracketed Round Robin view — split into groups, round robin within     */
+/*  each, then group winners play a mini round robin for final placement   */
+/* ---------------------------------------------------------------------- */
+function BracketedRoundRobinView({ category, categoryTeams, teamsById, brackets, matches, playoffMatches, onSplit, onMoveTeam, onGenerateMatches, onScore, onGeneratePlayoff, onPlayoffScore, onReset }) {
+  const [numBrackets, setNumBrackets] = useState(2);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const matchesExist = matches.length > 0;
+
+  if (brackets.length === 0) {
+    return (
+      <div className="cp-card">
+        <h2><Trophy size={15} /> Bracketed Round Robin setup</h2>
+        <p className="cp-muted-sm">{categoryTeams.length} team{categoryTeams.length !== 1 ? "s" : ""} registered. Teams get split into brackets, play round robin within their bracket, then each bracket's winner plays the others for final placement.</p>
+        <div className="cp-add-row">
+          <label className="cp-settings-field" style={{ margin: 0 }}>
+            <span>Number of brackets</span>
+            <input type="number" min="2" max={Math.max(2, Math.floor(categoryTeams.length / 2))} className="cp-input" style={{ width: 80 }} value={numBrackets} onChange={(e) => setNumBrackets(Math.max(2, Number(e.target.value) || 2))} />
+          </label>
+          <button className="cp-btn cp-btn-primary" onClick={() => onSplit(numBrackets)}>Split into brackets</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {!matchesExist && (
+        <div className="cp-card">
+          <h2><Shuffle size={15} /> Adjust brackets</h2>
+          <p className="cp-muted-sm">Teams were auto-split evenly. Move any team to a different bracket below, then generate the schedule when ready.</p>
+          {brackets.map((bracket) => (
+            <div key={bracket.id} style={{ marginBottom: 14 }}>
+              <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>{bracket.name} ({bracket.teamIds.length} teams)</p>
+              <div className="cp-tile-grid">
+                {bracket.teamIds.map((teamId) => (
+                  <div key={teamId} className="cp-team-tile">
+                    <span>{teamsById[teamId]?.label || "?"}</span>
+                    <select className="cp-select cp-tile-select" value={bracket.id} onChange={(e) => onMoveTeam(teamId, e.target.value)}>
+                      {brackets.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          <button className="cp-btn cp-btn-primary" onClick={onGenerateMatches}>Generate Round Robin matches</button>
+        </div>
+      )}
+
+      {matchesExist && brackets.map((bracket) => {
+        const bracketMatches = matches.filter((m) => m.bracketId === bracket.id);
+        const standings = computeStandings(bracket.teamIds, bracketMatches, teamsById);
+        return (
+          <div className="cp-card" key={bracket.id}>
+            <h2><Trophy size={15} /> {bracket.name}</h2>
+            <div className="cp-team-list" style={{ marginBottom: 14 }}>
+              {bracketMatches.map((m) => <MatchScoreRow key={m.id} teamsById={teamsById} match={m} onScore={onScore} />)}
+            </div>
+            <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>Standings</p>
+            <div className="cp-standings-scroll">
+              <table className="cp-standings-table">
+                <thead><tr><th>Team</th><th>P</th><th>W</th><th>L</th><th>+/-</th></tr></thead>
+                <tbody>
+                  {standings.map((r, i) => (
+                    <tr key={r.id} className={i === 0 && r.played > 0 ? "cp-rank-lead" : ""}>
+                      <td>{r.name}</td><td>{r.played}</td><td>{r.won}</td><td>{r.lost}</td><td>{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+
+      {matchesExist && (() => {
+        const allComplete = matches.every((m) => m.scoreA !== null && m.scoreA !== "" && m.scoreB !== null && m.scoreB !== "");
+        if (!allComplete) {
+          return <div className="cp-card"><p className="cp-muted-sm">Complete every bracket match above to unlock the placement playoff.</p></div>;
+        }
+        if (playoffMatches.length === 0) {
+          return (
+            <div className="cp-card">
+              <h2><Trophy size={15} /> Placement Playoff</h2>
+              <p className="cp-muted-sm">All bracket matches are done — generate the playoff among bracket winners to decide final placement.</p>
+              <button className="cp-btn cp-btn-primary" onClick={onGeneratePlayoff}>Generate placement playoff</button>
+            </div>
+          );
+        }
+        const playoffTeamIds = [...new Set(playoffMatches.flatMap((m) => [m.teamAId, m.teamBId]))];
+        const finalStandings = computeStandings(playoffTeamIds, playoffMatches, teamsById);
+        return (
+          <div className="cp-card">
+            <h2><Trophy size={15} /> Placement Playoff</h2>
+            <div className="cp-team-list" style={{ marginBottom: 14 }}>
+              {playoffMatches.map((m) => <MatchScoreRow key={m.id} teamsById={teamsById} match={m} onScore={onPlayoffScore} />)}
+            </div>
+            <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>Final placement</p>
+            <ul className="cp-placement-list">
+              {finalStandings.map((r, i) => (
+                <li key={r.id}>{i === 0 ? "🏆" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`} <b>{r.name}</b></li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
+
+      <div className="cp-card">
+        {confirmReset ? (
+          <div className="cp-modal-actions" style={{ justifyContent: "flex-start" }}>
+            <span className="cp-muted-sm">Clear all brackets, matches, and the playoff for this category?</span>
+            <button className="cp-btn cp-btn-ghost" onClick={() => setConfirmReset(false)}>Cancel</button>
+            <button className="cp-btn cp-btn-danger" onClick={() => { onReset(); setConfirmReset(false); }}>Yes, clear it</button>
+          </div>
+        ) : (
+          <button className="cp-btn cp-btn-ghost" onClick={() => setConfirmReset(true)}><Trash2 size={13} /> Reset Bracketed Round Robin</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+function RankingTab({ teams, rrPools, rrMatches, bracketMeta, bracketMatches, brBrackets, brMatches, brPlayoffMatches, colors }) {
+  const teamsById = Object.fromEntries(teams.map((t) => [t.id, t]));
+  const anyData = rrPools.length > 0 || bracketMeta.length > 0 || brBrackets.length > 0;
+  const [exportPreview, setExportPreview] = useState(null); // { canvas, fileName, title } | null
+
+  const handleShare = async () => {
+    const node = buildRankingExportNode(colors, teams, rrPools, rrMatches, bracketMeta, bracketMatches, brBrackets, brMatches, brPlayoffMatches);
+    const canvas = await renderExportCanvas(node, colors);
+    setExportPreview({ canvas, fileName: "Ranking.png", title: "Ranking" });
+  };
+
+  if (!anyData) {
+    return <div className="cp-card"><p className="cp-empty">No Round Robin, Bracket, or Bracketed Round Robin results yet — set one up in the Matches tab first.</p></div>;
+  }
+
+  return (
+    <>
+      <div className="cp-section-head" style={{ marginBottom: 4 }}>
+        <span />
+        <button className="cp-btn cp-btn-ghost" onClick={handleShare}>Share</button>
+      </div>
+      {CATEGORIES.map((cat) => {
+        const pools = rrPools.filter((p) => p.category === cat.key);
+        const meta = bracketMeta.find((b) => b.category === cat.key);
+        const brackets = brBrackets.filter((b) => b.category === cat.key);
+        if (pools.length === 0 && !meta && brackets.length === 0) return null;
+        return (
+          <div className="cp-card" key={cat.key}>
+            <h2><Trophy size={15} /> {cat.label}</h2>
+
+            {pools.map((pool) => {
+              const poolMatches = rrMatches.filter((m) => m.poolId === pool.id);
+              const standings = computeStandings(pool.teamIds, poolMatches, teamsById);
+              return (
+                <div key={pool.id} style={{ marginBottom: 14 }}>
+                  <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>{pool.name} (Round Robin)</p>
+                  <div className="cp-standings-scroll">
+                    <table className="cp-standings-table">
+                      <thead><tr><th>#</th><th>Team</th><th>P</th><th>W</th><th>L</th><th>+/-</th></tr></thead>
+                      <tbody>
+                        {standings.map((r, i) => (
+                          <tr key={r.id} className={i === 0 && r.played > 0 ? "cp-rank-lead" : ""}>
+                            <td>{i + 1}</td><td>{r.name}</td><td>{r.played}</td><td>{r.won}</td><td>{r.lost}</td><td>{r.diff > 0 ? `+${r.diff}` : r.diff}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+
+            {meta && (() => {
+              const catMatches = bracketMatches.filter((m) => m.category === cat.key);
+              const grandFinal = catMatches.find((m) => m.bracket === "grandfinal");
+              const wbFinal = catMatches.find((m) => m.bracket === "winners" && m.round === meta.totalRounds);
+              const champFinal = meta.type === "double" ? grandFinal : wbFinal;
+              const champion = champFinal?.winnerId ? teamsById[champFinal.winnerId]?.label : null;
+              const runnerUpId = champFinal?.winnerId ? (champFinal.teamAId === champFinal.winnerId ? champFinal.teamBId : champFinal.teamAId) : null;
+              const semifinalRound = meta.totalRounds - 1;
+              const semis = semifinalRound >= 1 ? catMatches.filter((m) => m.bracket === "winners" && m.round === semifinalRound) : [];
+              const semifinalists = semis.flatMap((m) => [m.teamAId, m.teamBId]).filter((id) => id && id !== champFinal?.winnerId && id !== runnerUpId);
+              return (
+                <div>
+                  <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>Bracket ({meta.type === "double" ? "Double" : "Single"} elimination)</p>
+                  {champion ? (
+                    <ul className="cp-placement-list">
+                      <li>🏆 <b>Champion:</b> {champion}</li>
+                      {runnerUpId && <li>🥈 <b>Runner-up:</b> {teamsById[runnerUpId]?.label}</li>}
+                      {semifinalists.length > 0 && <li>🥉 <b>Semifinalists:</b> {semifinalists.map((id) => teamsById[id]?.label).join(", ")}</li>}
+                    </ul>
+                  ) : (
+                    <p className="cp-muted-sm">Bracket in progress — no champion yet.</p>
+                  )}
+                </div>
+              );
+            })()}
+
+            {brackets.length > 0 && (() => {
+              const catPlayoffMatches = brPlayoffMatches.filter((m) => m.category === cat.key);
+              if (catPlayoffMatches.length === 0) {
+                return <p className="cp-muted-sm">Bracketed Round Robin in progress — no placement playoff yet.</p>;
+              }
+              const playoffTeamIds = [...new Set(catPlayoffMatches.flatMap((m) => [m.teamAId, m.teamBId]))];
+              const finalStandings = computeStandings(playoffTeamIds, catPlayoffMatches, teamsById);
+              return (
+                <div>
+                  <p className="cp-muted-sm" style={{ fontWeight: 700, marginBottom: 6 }}>Bracketed Round Robin — Final placement</p>
+                  <ul className="cp-placement-list">
+                    {finalStandings.map((r, i) => (
+                      <li key={r.id}>{i === 0 ? "🏆" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`} <b>{r.name}</b></li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
+          </div>
+        );
+      })}
+      {exportPreview && <ExportPreviewModal canvas={exportPreview.canvas} fileName={exportPreview.fileName} title={exportPreview.title} onClose={() => setExportPreview(null)} />}
+    </>
+  );
+}
+
+function PaymentTab({ participants, registrationFee, setRegistrationFee, togglePaid, colors }) {
+  const fee = Number(registrationFee) || 0;
+  const paidCount = participants.filter((p) => p.paid).length;
+  const collected = paidCount * fee;
+  const expected = participants.length * fee;
+  const [exportPreview, setExportPreview] = useState(null); // { canvas, fileName, title } | null
+
+  const handleShare = async () => {
+    const node = buildPaymentExportNode(colors, participants, fee);
+    const canvas = await renderExportCanvas(node, colors);
+    setExportPreview({ canvas, fileName: "Payment.png", title: "Payment" });
+  };
+
+  return (
+    <>
+      <div className="cp-card">
+        <h2>Registration fee</h2>
+        <label className="cp-settings-field" style={{ maxWidth: 220 }}>
+          <span>Fee per participant (₱)</span>
+          <input type="text" inputMode="decimal" className="cp-input" placeholder="0.00" value={registrationFee} onChange={(e) => setRegistrationFee(e.target.value.replace(/[^0-9.]/g, ""))} />
+        </label>
+      </div>
+
+      <div className="cp-card">
+        <div className="cp-section-head">
+          <h2>Participants <span className="cp-muted-sm">({paidCount}/{participants.length} paid)</span></h2>
+          <button className="cp-btn cp-btn-ghost" onClick={handleShare} disabled={participants.length === 0}>Share</button>
+        </div>
+        {participants.length === 0 ? (
+          <p className="cp-empty">No participants yet — add them in the Teams tab.</p>
+        ) : (
+          <>
+            <div className="cp-standings-scroll">
+              <table className="cp-standings-table cp-payment-table">
+                <thead><tr><th>Participant</th><th>Fee</th><th>Paid</th></tr></thead>
+                <tbody>
+                  {participants.map((p) => (
+                    <tr key={p.id}>
+                      <td>{p.name}</td>
+                      <td>₱{fee.toFixed(2)}</td>
+                      <td><label className="cp-paid-check"><input type="checkbox" checked={!!p.paid} onChange={() => togglePaid(p.id)} /></label></td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr><td style={{ fontWeight: 800 }}>Total</td><td style={{ fontWeight: 800 }}>₱{expected.toFixed(2)}</td><td style={{ fontWeight: 800 }}>₱{collected.toFixed(2)} collected</td></tr>
+                </tfoot>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+      {exportPreview && <ExportPreviewModal canvas={exportPreview.canvas} fileName={exportPreview.fileName} title={exportPreview.title} onClose={() => setExportPreview(null)} />}
+    </>
+  );
+}
+function SettingsTab({ theme, setTheme, fontChoice, setFontChoice, fontSizeChoice, setFontSizeChoice, geminiKeys, setGeminiKeys, geminiKeyIndex, setGeminiKeyIndex }) {
+  const setKeyAt = (i, value) => setGeminiKeys((prev) => { const next = [...prev]; next[i] = value; return next; });
+  return (
+    <div className="cp-settings-layout">
+      <div className="cp-card">
+        <h2><Palette size={15} /> Theme</h2>
+        <div className="cp-theme-grid">
+          {Object.keys(THEMES).map((key) => (
+            <button key={key} className={`cp-theme-swatch ${theme === key ? "cp-theme-swatch-active" : ""}`} style={{ background: THEMES[key].cream, borderColor: THEMES[key].court }} onClick={() => setTheme(key)}>
+              <span className="cp-theme-swatch-bar" style={{ background: THEMES[key].court }} />
+              <span className="cp-theme-swatch-bar" style={{ background: THEMES[key].shuttle }} />
+              <span className="cp-theme-swatch-label" style={{ color: THEMES[key].ink }}>{THEME_LABELS[key]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="cp-card">
+        <h2><Type size={15} /> Text</h2>
+        <label className="cp-settings-field">
+          <span>Font</span>
+          <select className="cp-select" style={{ width: "100%" }} value={fontChoice} onChange={(e) => setFontChoice(e.target.value)}>
+            {Object.keys(FONT_OPTIONS).map((key) => <option key={key} value={key}>{FONT_OPTIONS[key].label}</option>)}
+          </select>
+        </label>
+        <label className="cp-settings-field">
+          <span>Font size</span>
+          <select className="cp-select" style={{ width: "100%" }} value={fontSizeChoice} onChange={(e) => setFontSizeChoice(e.target.value)}>
+            {Object.keys(FONT_SIZES).map((key) => <option key={key} value={key}>{FONT_SIZE_LABELS[key]}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="cp-card">
+        <h2><Key size={15} /> Gemini API keys</h2>
+        <p className="cp-muted-sm">Shared with Casual's AI matchmaking. Stored only on this device.</p>
+        <label className="cp-settings-field">
+          <span>Active key</span>
+          <select className="cp-select" style={{ width: "100%" }} value={geminiKeyIndex} onChange={(e) => setGeminiKeyIndex(Number(e.target.value))}>
+            {[0, 1, 2].map((i) => <option key={i} value={i}>Gemini AI {i + 1}{(geminiKeys[i] || "").trim() ? "" : " (not set)"}</option>)}
+          </select>
+        </label>
+        {[0, 1, 2].map((i) => (
+          <label key={i} className="cp-settings-field">
+            <span>Gemini AI {i + 1}</span>
+            <input type="password" className="cp-input" style={{ width: "100%", boxSizing: "border-box" }} placeholder="Paste API key here" value={geminiKeys[i] || ""} onChange={(e) => setKeyAt(i, e.target.value)} />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Styles                                                                  */
+/* ---------------------------------------------------------------------- */
+function CompetitionStyles({ colors, fontFamily }) {
+  const COLORS = colors;
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+      .cp-root { min-height: 100vh; background: ${COLORS.cream}; color: ${COLORS.ink}; display: flex; flex-direction: column; }
+      .cp-header { background: linear-gradient(90deg, #000000 0%, #000000 33%, ${COLORS.headerBg} 100%); color: ${COLORS.headerText}; padding: 16px 22px; }
+      .cp-back-circle { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,0.14); color: ${COLORS.headerText}; text-decoration: none; margin-left: auto; }
+      .cp-back-circle:hover { background: rgba(255,255,255,0.24); }
+      .cp-brand-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+      .cp-brand-logo { height: 72px; width: auto; flex-shrink: 0; }
+      .cp-brand-text h1 { font-family: 'Oswald', sans-serif; font-size: 18px; letter-spacing: 0.02em; margin: 0; text-transform: uppercase; }
+      .cp-header-date { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: rgba(246,243,234,0.75); display: block; margin-top: 2px; }
+      .cp-header-line { height: 3px; margin-top: 14px; background: repeating-linear-gradient(90deg, ${COLORS.shuttle} 0 18px, transparent 18px 26px); opacity: 0.85; }
+
+      .cp-tabbar { display: flex; gap: 4px; background: ${COLORS.card}; padding: 8px 14px 0; border-bottom: 1px solid #E7E2D3; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .cp-tab { flex-shrink: 0; }
+      .cp-tab { display: flex; align-items: center; gap: 6px; padding: 9px 14px; border: none; background: transparent; font-family: ${fontFamily}; font-weight: 700; font-size: 13px; color: ${COLORS.muted}; cursor: pointer; border-radius: 8px 8px 0 0; }
+      .cp-tab-active { color: ${COLORS.accent}; background: ${COLORS.cream}; }
+      .cp-tab-count { background: ${COLORS.shuttle}; color: ${COLORS.courtDark}; font-family: 'IBM Plex Mono'; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 20px; }
+      .cp-tab-icon-only { margin-left: auto; padding: 9px 12px; }
+      .cp-main { flex: 1; max-width: 760px; width: 100%; margin: 0 auto; padding: 18px; box-sizing: border-box; }
+
+      .cp-card { background: ${COLORS.card}; border: 1px solid rgba(0,0,0,0.08); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+      .cp-modal-overlay { position: fixed; inset: 0; background: rgba(10,32,24,0.55); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+      .cp-modal { background: ${COLORS.cream}; border-radius: 16px; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+      .cp-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 8px; }
+      .cp-modal-head h3 { font-family: 'Oswald'; font-size: 15px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0; }
+      .cp-modal-body { padding: 12px 18px 18px; }
+      .cp-export-modal { position: relative; padding-bottom: 56px; }
+      .cp-export-scroll { max-height: 60vh; overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; }
+      .cp-export-scroll::-webkit-scrollbar { display: none; }
+      .cp-export-share-btn { position: absolute; bottom: 14px; right: 18px; box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
+      .cp-card h2 { font-family: 'Oswald'; font-size: 14px; text-transform: uppercase; color: ${COLORS.accent}; margin: 0 0 12px; display: flex; align-items: center; gap: 7px; }
+      .cp-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+      .cp-section-head h2 { margin: 0; }
+      .cp-muted-sm { font-size: 12px; color: ${COLORS.muted}; font-weight: 400; }
+      .cp-empty { color: ${COLORS.muted}; font-size: 13px; padding: 10px 0; }
+      .cp-coming-soon { margin-top: 12px; font-size: 12.5px; color: ${COLORS.muted}; font-style: italic; }
+
+      .cp-add-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+      .cp-input, .cp-select { font-family: ${fontFamily}; font-size: 13.5px; padding: 8px 10px; border: 1px solid rgba(0,0,0,0.15); border-radius: 8px; background: ${COLORS.cream}; color: ${COLORS.ink}; }
+      .cp-btn { font-family: ${fontFamily}; font-weight: 700; font-size: 12.5px; padding: 9px 14px; border-radius: 9px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+      .cp-btn-primary { background: ${COLORS.accent}; color: ${COLORS.headerText}; }
+      .cp-btn-ghost { background: rgba(0,0,0,0.06); color: ${COLORS.ink}; }
+      .cp-btn-danger { background: #C1453D; color: #fff; }
+      .cp-modal-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+      .cp-match-row { display: flex; align-items: center; gap: 8px; padding: 8px 4px; border-bottom: 1px solid rgba(0,0,0,0.06); font-size: 13px; }
+      .cp-match-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+      .cp-match-winner { font-weight: 800; color: ${COLORS.accent}; }
+      .cp-match-scores { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+      .cp-score-input { width: 40px; text-align: center; font-family: 'IBM Plex Mono'; font-size: 12.5px; font-weight: 700; padding: 4px 2px; border: 1px solid #DDD6C2; border-radius: 6px; background: ${COLORS.cream}; color: ${COLORS.ink}; }
+      .cp-score-input:focus { outline: 2px solid ${COLORS.accent}; outline-offset: 1px; }
+      .cp-bracket-round { margin-bottom: 14px; }
+      .cp-round-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: ${COLORS.muted}; font-weight: 700; margin: 0 0 4px; }
+      .cp-champion-line { font-weight: 800; font-size: 14px; color: ${COLORS.accent}; margin: 0; }
+      .cp-standings-scroll { overflow-x: auto; }
+      .cp-standings-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .cp-standings-table th { text-align: left; color: ${COLORS.muted}; font-weight: 700; padding: 4px 6px; border-bottom: 1px solid rgba(0,0,0,0.1); }
+      .cp-standings-table td { padding: 5px 6px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+      .cp-payment-table { table-layout: fixed; }
+      .cp-payment-table th, .cp-payment-table td { width: 33.33%; word-break: break-word; }
+      .cp-paid-check { display: flex; justify-content: center; }
+      .cp-paid-check input { accent-color: ${COLORS.accent}; width: 16px; height: 16px; cursor: pointer; }
+      .cp-rank-lead td:first-child { font-weight: 800; color: ${COLORS.accent}; }
+      .cp-placement-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+      .cp-tile-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+      .cp-team-tile { display: flex; flex-direction: column; gap: 4px; background: ${COLORS.cream}; border: 1px solid rgba(0,0,0,0.1); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; min-width: 130px; }
+      .cp-team-tile span { font-weight: 700; }
+      .cp-tile-select { font-size: 11.5px; padding: 4px 6px; }
+
+      .cp-chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+      .cp-chip { display: inline-flex; align-items: center; gap: 5px; background: ${COLORS.cream}; border: 1px solid rgba(0,0,0,0.1); border-radius: 20px; padding: 5px 10px; font-size: 12.5px; }
+      .cp-chip em { font-style: normal; opacity: 0.6; }
+      .cp-chip-x { background: none; border: none; cursor: pointer; color: ${COLORS.muted}; display: flex; padding: 2px; }
+
+      .cp-team-list { display: flex; flex-direction: column; gap: 6px; }
+      .cp-team-row { display: flex; align-items: center; justify-content: space-between; background: ${COLORS.cream}; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+      .cp-icon-btn { background: none; border: none; color: ${COLORS.muted}; cursor: pointer; padding: 4px; display: flex; }
+      .cp-icon-btn:hover { color: #C1453D; }
+
+      .cp-subtab-row { display: flex; gap: 6px; margin-bottom: 8px; }
+      .cp-subtab { flex: 1; padding: 9px 0; border: 1px solid rgba(0,0,0,0.1); background: ${COLORS.card}; color: ${COLORS.muted}; font-family: ${fontFamily}; font-weight: 700; font-size: 12.5px; border-radius: 9px; cursor: pointer; }
+      .cp-subtab-active { background: ${COLORS.accent}; color: ${COLORS.headerText}; border-color: ${COLORS.accent}; }
+      .cp-subtab-row-secondary { margin-bottom: 16px; }
+      .cp-subtab-secondary { font-size: 12px; }
+
+      .cp-settings-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
+      .cp-settings-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+      .cp-settings-field > span { font-size: 12px; font-weight: 700; }
+      .cp-theme-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .cp-theme-swatch { border: 2px solid transparent; border-radius: 12px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; }
+      .cp-theme-swatch-active { outline: 2px solid ${COLORS.accent}; outline-offset: 2px; }
+      .cp-theme-swatch-bar { display: block; height: 6px; border-radius: 4px; }
+      .cp-theme-swatch-label { font-size: 11px; font-weight: 700; text-align: left; }
+
+      .cp-toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: ${COLORS.courtDark}; color: ${COLORS.cream}; padding: 10px 18px; border-radius: 10px; font-size: 12.5px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 60; }
+
+      @media (max-width: 600px) { .cp-root input, .cp-root select { font-size: 16px !important; } }
+    `}</style>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>

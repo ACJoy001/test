@@ -139,19 +139,6 @@ function sanitizeNumeric(raw, allowNegative) {
   return v;
 }
 
-const DEMO_PLAYERS = [
-  { name: "Alex Cruz", level: "Advance", gender: "Male" },
-  { name: "Bea Santos", level: "Advance", gender: "Female" },
-  { name: "Carlo Reyes", level: "Intermediate", gender: "Male" },
-  { name: "Dana Lim", level: "Intermediate", gender: "Female" },
-  { name: "Ella Tan", level: "Beginner", gender: "Female" },
-  { name: "Franco Diaz", level: "Beginner", gender: "Male" },
-  { name: "Grace Uy", level: "Intermediate", gender: "Female" },
-  { name: "Hugo Ramos", level: "Advance", gender: "Male" },
-  { name: "Ivy Chen", level: "Beginner", gender: "Female" },
-  { name: "Jun Aquino", level: "Intermediate", gender: "Male" },
-];
-
 /* ---------------------------------------------------------------------- */
 /*  Matchmaking engine                                                     */
 /* ---------------------------------------------------------------------- */
@@ -802,7 +789,7 @@ function App() {
       let gIdx = await loadKey("bq_geminiKeyIndex", 0);
       let appearance = await loadKey("bq_appearance", { theme: "green", font: "manrope", fontSize: "medium" });
 
-      if (p === null) p = DEMO_PLAYERS.map((d) => ({ id: uid("pl"), ...d, matchesToday: 0, sitOutStreak: 0, shuttleGamesToday: 0, miscAdjustment: "", paidToday: false }));
+      if (p === null) p = [];
       p = p.map((pl) => ({ ...pl, sitOutStreak: pl.sitOutStreak ?? 0, shuttleGamesToday: pl.shuttleGamesToday ?? 0, miscAdjustment: pl.miscAdjustment !== undefined && String(pl.miscAdjustment) !== "0" ? String(pl.miscAdjustment) : "", paidToday: pl.paidToday ?? false }));
       c = c.map((court) => ({ ...court, needsShuttle: court.needsShuttle ?? false }));
 

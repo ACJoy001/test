@@ -507,7 +507,7 @@ function UndercoverStyles({ colors, fontFamily }) {
       @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
       .uc-root { min-height: 100vh; background: ${COLORS.cream}; color: ${COLORS.ink}; display: flex; flex-direction: column; }
       .uc-header { background: #000000; padding: 0; overflow: hidden; position: relative; height: auto; max-height: 220px; object-fit: contain; }
-      .uc-banner-bg { position: absolute; top: 0; left: 0; width: 100%; height: 220px; object-fit: cover;  }
+      .uc-banner-bg { position: absolute; top: 0; left: 50%; transform: translateX(-50%); height: 220px; object-fit: cover; }
       .uc-banner-fg { position: relative; display: block; width: 100%; height: auto; max-height: 220px; object-fit: contain; object-position: center center; margin: 0 auto; }
       .uc-tab-icon { background: rgba(0,0,0,0.08); border: none; color: ${COLORS.accent}; width: 34px; height: 34px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
       .uc-tab-icon-active { background: rgba(0,0,0,0.16); }
